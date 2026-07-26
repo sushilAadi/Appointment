@@ -22,6 +22,16 @@ create index if not exists appointments_client_phone_idx on appointments (client
 create index if not exists appointments_start_time_idx on appointments (start_time);
 create index if not exists appointments_status_idx on appointments (status);
 
+-- Hard stop against double-booking: no two CONFIRMED appointments may
+-- share the same start_time. The app also checks availability before
+-- inserting (for a friendly "that slot was just taken" message), but that
+-- check-then-insert has a small race window under concurrent bookings —
+-- this unique index is what actually guarantees it can never happen, by
+-- rejecting the second insert outright.
+create unique index if not exists appointments_unique_confirmed_start
+  on appointments (start_time)
+  where status = 'CONFIRMED';
+
 -- Per-phone-number WhatsApp conversation state for the booking bot.
 create table if not exists chat_sessions (
   id         uuid primary key default gen_random_uuid(),

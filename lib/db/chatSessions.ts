@@ -4,11 +4,13 @@ export type SessionStep =
   | "IDLE"
   | "AWAITING_NAME"
   | "AWAITING_SLOT_SELECTION"
+  | "AWAITING_CONCERN"
   | "AWAITING_CANCEL_SELECTION";
 
 export interface SessionData {
   clientName?: string;
   offeredSlots?: { start: string; end: string }[]; // ISO strings
+  selectedSlot?: { start: string; end: string }; // ISO strings, chosen slot awaiting concern + confirmation
   cancellableAppointments?: string[]; // appointment ids, in displayed order
   [key: string]: unknown;
 }

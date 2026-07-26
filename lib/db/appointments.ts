@@ -1,5 +1,15 @@
 import { getSupabaseAdmin } from "../supabaseAdmin";
 
+// Thrown when an insert is rejected by the appointments_unique_confirmed_start
+// unique index (Postgres error code 23505) — i.e. someone else booked the
+// exact same slot a moment before this request landed.
+export class SlotUnavailableError extends Error {
+  constructor() {
+    super("That slot was just booked by someone else.");
+    this.name = "SlotUnavailableError";
+  }
+}
+
 export type AppointmentStatus = "CONFIRMED" | "CANCELLED";
 
 export interface Appointment {
@@ -53,6 +63,7 @@ export async function createAppointmentRecord(input: {
   clientPhone: string;
   startTime: Date;
   endTime: Date;
+  notes?: string | null;
 }): Promise<Appointment> {
   const supabase = getSupabaseAdmin();
   const { data, error } = await supabase
@@ -63,12 +74,37 @@ export async function createAppointmentRecord(input: {
       start_time: input.startTime.toISOString(),
       end_time: input.endTime.toISOString(),
       status: "CONFIRMED",
+      notes: input.notes ?? null,
     })
     .select()
     .single();
 
-  if (error || !data) throw new Error(`Failed to create appointment: ${error?.message}`);
+  if (error) {
+    if (error.code === "23505") throw new SlotUnavailableError();
+    throw new Error(`Failed to create appointment: ${error.message}`);
+  }
+  if (!data) throw new Error("Failed to create appointment: no data returned");
   return mapRow(data as AppointmentRow);
+}
+
+/**
+ * Proactive check used right before showing a booking confirmation — avoids
+ * the generic DB error in the common case. The unique index in
+ * supabase/schema.sql is still the real guarantee against a race, since
+ * this check-then-insert has a (small) window between the two.
+ */
+export async function isSlotTaken(startTime: Date, endTime: Date): Promise<boolean> {
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase
+    .from("appointments")
+    .select("id")
+    .eq("status", "CONFIRMED")
+    .lt("start_time", endTime.toISOString())
+    .gt("end_time", startTime.toISOString())
+    .limit(1);
+
+  if (error) throw new Error(`Failed to check slot availability: ${error.message}`);
+  return (data?.length ?? 0) > 0;
 }
 
 export async function setAppointmentGoogleEventId(id: string, googleEventId: string): Promise<void> {

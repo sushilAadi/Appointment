@@ -2,10 +2,12 @@ import { listAppointments } from "./db/appointments";
 import { getBusyIntervals } from "./calendar";
 import {
   BOOKING_WINDOW_DAYS,
+  CLINIC_TIMEZONE,
   MAX_SLOTS_SHOWN,
   SLOT_MINUTES,
   WORKING_HOURS,
 } from "./config";
+import { toClinicLocal, fromClinicLocal } from "./timezone";
 
 export interface Slot {
   start: Date;
@@ -44,33 +46,41 @@ export async function getAvailableSlots(limit = MAX_SLOTS_SHOWN): Promise<Slot[]
   ];
 
   const slots: Slot[] = [];
-  const cursor = new Date(now);
-  cursor.setSeconds(0, 0);
-  // Round up to the next slot boundary.
-  const remainder = cursor.getMinutes() % SLOT_MINUTES;
-  if (remainder !== 0) cursor.setMinutes(cursor.getMinutes() + (SLOT_MINUTES - remainder));
+  // "Today" in the clinic's timezone, not the server's.
+  const clinicNow = toClinicLocal(now);
 
   for (let day = 0; day < BOOKING_WINDOW_DAYS && slots.length < limit; day++) {
-    const dayDate = new Date(now);
-    dayDate.setDate(dayDate.getDate() + day);
-    dayDate.setHours(0, 0, 0, 0);
+    // Midnight of this day, expressed as clinic-local wall-clock fields
+    // (read via the UTC getters on the shifted Date — see toClinicLocal).
+    const localMidnight = new Date(
+      Date.UTC(clinicNow.getUTCFullYear(), clinicNow.getUTCMonth(), clinicNow.getUTCDate() + day)
+    );
 
-    if (WORKING_HOURS.closedDays.includes(dayDate.getDay())) continue;
+    if (WORKING_HOURS.closedDays.includes(localMidnight.getUTCDay())) continue;
 
-    const dayStart = new Date(dayDate);
-    dayStart.setHours(WORKING_HOURS.startHour, 0, 0, 0);
-    const dayEnd = new Date(dayDate);
-    dayEnd.setHours(WORKING_HOURS.endHour, 0, 0, 0);
+    const localDayStart = new Date(localMidnight);
+    localDayStart.setUTCHours(WORKING_HOURS.startHour, 0, 0, 0);
+    const localDayEnd = new Date(localMidnight);
+    localDayEnd.setUTCHours(WORKING_HOURS.endHour, 0, 0, 0);
 
-    let slotStart = day === 0 && cursor > dayStart ? new Date(cursor) : new Date(dayStart);
+    // Convert the clinic-local boundaries back to real UTC instants for
+    // comparison against `now` and stored appointment times.
+    const dayStart = fromClinicLocal(localDayStart);
+    const dayEnd = fromClinicLocal(localDayEnd);
+
+    let slotStart = new Date(dayStart);
 
     while (slotStart < dayEnd && slots.length < limit) {
       const slotEnd = new Date(slotStart.getTime() + SLOT_MINUTES * 60_000);
       if (slotEnd > dayEnd) break;
 
-      const conflict = busy.some((b) => overlaps(slotStart, slotEnd, b.start, b.end));
-      if (!conflict && slotStart > now) {
-        slots.push({ start: new Date(slotStart), end: new Date(slotEnd) });
+      // Only offer slots that are still in the future — this is the check
+      // that keeps past-time slots off the list for "today".
+      if (slotStart > now) {
+        const conflict = busy.some((b) => overlaps(slotStart, slotEnd, b.start, b.end));
+        if (!conflict) {
+          slots.push({ start: new Date(slotStart), end: new Date(slotEnd) });
+        }
       }
 
       slotStart = new Date(slotStart.getTime() + SLOT_MINUTES * 60_000);
@@ -85,10 +95,12 @@ export function formatSlot(slot: Slot): string {
     weekday: "short",
     month: "short",
     day: "numeric",
+    timeZone: CLINIC_TIMEZONE,
   });
   const timeFmt = new Intl.DateTimeFormat("en-US", {
     hour: "numeric",
     minute: "2-digit",
+    timeZone: CLINIC_TIMEZONE,
   });
   return `${dateFmt.format(slot.start)}, ${timeFmt.format(slot.start)}–${timeFmt.format(slot.end)}`;
 }

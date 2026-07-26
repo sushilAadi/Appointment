@@ -2,8 +2,9 @@ import { listAppointments } from "./db/appointments";
 import { sendWhatsAppText } from "./whatsapp";
 import { getSession, resetSession, setSession } from "./db/chatSessions";
 import { getAvailableSlots, formatSlot } from "./availability";
-import { createAppointment, cancelAppointment } from "./appointments";
+import { createAppointment, cancelAppointment, SlotUnavailableError } from "./appointments";
 import { CLINIC_NAME, DOCTOR_NAME, isDoctor } from "./config";
+import { clinicMidnight } from "./timezone";
 
 /** Entry point called by the webhook route for every inbound WhatsApp message. */
 export async function handleIncomingMessage(from: string, rawText: string) {
@@ -40,6 +41,8 @@ async function handleClientMessage(from: string, text: string) {
       return handleAwaitingName(from, text);
     case "AWAITING_SLOT_SELECTION":
       return handleAwaitingSlotSelection(from, text, data.offeredSlots ?? []);
+    case "AWAITING_CONCERN":
+      return handleAwaitingConcern(from, text, data.clientName, data.selectedSlot);
     case "AWAITING_CANCEL_SELECTION":
       return handleClientCancelSelection(from, text, data.cancellableAppointments ?? []);
     default:
@@ -60,13 +63,21 @@ async function handleClientIdle(from: string, lower: string) {
     return sendClientMenu(from);
   }
 
-  if (lower.includes("book") || lower.includes("appointment")) {
-    await setSession(from, "AWAITING_NAME", {});
-    return sendWhatsAppText(from, "Sure! What's the patient's full name?");
+  // "2"/"3" (numeric shortcuts matching the menu) checked BEFORE "1"/book,
+  // and "my appointments" checked before the generic "book" text match —
+  // "my appointments" contains the substring "appointment", so it must be
+  // matched first or it'd be swallowed by the booking branch below.
+  if (lower === "2" || lower.includes("my appointment") || lower === "status" || lower.includes("upcoming")) {
+    return listClientAppointments(from);
   }
 
-  if (lower.includes("my appointment") || lower === "status" || lower.includes("upcoming")) {
-    return listClientAppointments(from);
+  if (lower === "3") {
+    return startCancelFlow(from);
+  }
+
+  if (lower === "1" || lower.includes("book") || lower === "appointment") {
+    await setSession(from, "AWAITING_NAME", {});
+    return sendWhatsAppText(from, "Sure! What's the patient's full name?");
   }
 
   return sendClientMenu(from);
@@ -118,12 +129,65 @@ async function handleAwaitingSlotSelection(
   const clientName = data.clientName ?? "Patient";
   const slot = offeredSlots[choice - 1];
 
-  await createAppointment({
+  await setSession(from, "AWAITING_CONCERN", {
     clientName,
-    clientPhone: from,
-    start: new Date(slot.start),
-    end: new Date(slot.end),
+    selectedSlot: slot,
   });
+
+  return sendWhatsAppText(
+    from,
+    `Got it. Any specific concern or reason for the visit? (optional — reply "skip" to leave it blank)`
+  );
+}
+
+async function handleAwaitingConcern(
+  from: string,
+  text: string,
+  clientName: string | undefined,
+  selectedSlot: { start: string; end: string } | undefined
+) {
+  if (!selectedSlot) {
+    // Session data got lost somehow — restart cleanly rather than crash.
+    await resetSession(from);
+    return sendWhatsAppText(from, `Something went wrong — let's start over. Reply "book" to try again.`);
+  }
+
+  const lower = text.trim().toLowerCase();
+  const notes = lower === "skip" || text.trim() === "" ? null : text.trim();
+
+  try {
+    await createAppointment({
+      clientName: clientName ?? "Patient",
+      clientPhone: from,
+      start: new Date(selectedSlot.start),
+      end: new Date(selectedSlot.end),
+      notes,
+    });
+  } catch (err) {
+    if (err instanceof SlotUnavailableError) {
+      // Someone else grabbed this exact slot between it being listed and
+      // confirmed here — show a fresh list instead of failing silently.
+      const freshSlots = await getAvailableSlots();
+      if (freshSlots.length === 0) {
+        await resetSession(from);
+        return sendWhatsAppText(
+          from,
+          `Sorry, that time was just booked by someone else, and there are no other open slots right now. Please try again later.`
+        );
+      }
+
+      const list = freshSlots.map((s, i) => `${i + 1}. ${formatSlot(s)}`).join("\n");
+      await setSession(from, "AWAITING_SLOT_SELECTION", {
+        clientName,
+        offeredSlots: freshSlots.map((s) => ({ start: s.start.toISOString(), end: s.end.toISOString() })),
+      });
+      return sendWhatsAppText(
+        from,
+        `Sorry, that time was just booked by someone else. Here are the current available times:\n\n${list}\n\nReply with the number of the time that works best.`
+      );
+    }
+    throw err;
+  }
 
   await resetSession(from);
   // createAppointment already sends the confirmation message to the client.
@@ -201,21 +265,19 @@ async function handleDoctorMessage(from: string, text: string) {
     return handleDoctorCancelSelection(from, text, data.cancellableAppointments ?? []);
   }
 
-  if (lower === "cancel") return startDoctorCancelFlow(from);
-  if (lower === "today") return listDoctorAppointments(from, "today");
-  if (lower === "week") return listDoctorAppointments(from, "week");
+  if (lower === "1" || lower === "today") return listDoctorAppointments(from, "today");
+  if (lower === "2" || lower === "week") return listDoctorAppointments(from, "week");
+  if (lower === "3" || lower === "cancel") return startDoctorCancelFlow(from);
 
   return sendWhatsAppText(
     from,
-    `Hi ${DOCTOR_NAME}. Reply:\n"today" — today's appointments\n"week" — this week's appointments\n"cancel" — cancel an appointment`
+    `Hi ${DOCTOR_NAME}. Reply:\n1️⃣ "today" — today's appointments\n2️⃣ "week" — this week's appointments\n3️⃣ "cancel" — cancel an appointment`
   );
 }
 
 async function listDoctorAppointments(from: string, range: "today" | "week") {
-  const start = new Date();
-  start.setHours(0, 0, 0, 0);
-  const end = new Date(start);
-  end.setDate(end.getDate() + (range === "today" ? 1 : 7));
+  const start = clinicMidnight(0);
+  const end = clinicMidnight(range === "today" ? 1 : 7);
 
   const appointments = await listAppointments({
     status: "CONFIRMED",

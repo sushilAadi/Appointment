@@ -2,9 +2,13 @@ import {
   cancelAppointmentRecord,
   createAppointmentRecord,
   getAppointmentById,
+  isSlotTaken,
   setAppointmentGoogleEventId,
+  SlotUnavailableError,
   type Appointment,
 } from "./db/appointments";
+
+export { SlotUnavailableError };
 import { createCalendarEvent, deleteCalendarEvent } from "./calendar";
 import { appendAppointmentRow, updateAppointmentStatusInSheet } from "./sheets";
 import { sendWhatsAppText } from "./whatsapp";
@@ -17,22 +21,41 @@ import { formatSlot } from "./availability";
  * the client and the doctor over WhatsApp. Each side effect is best-effort
  * and logged on failure so one broken integration doesn't roll back a
  * confirmed appointment the patient already saw on screen.
+ *
+ * Throws SlotUnavailableError if the slot is already booked — either caught
+ * here proactively, or surfaced by the database's unique constraint if two
+ * bookings land at almost the same instant. Callers (the WhatsApp bot)
+ * should catch this and offer the patient a fresh slot list.
  */
 export async function createAppointment(input: {
   clientName: string;
   clientPhone: string;
   start: Date;
   end: Date;
+  notes?: string | null;
 }): Promise<Appointment> {
+  if (await isSlotTaken(input.start, input.end)) {
+    throw new SlotUnavailableError();
+  }
+
   const appointment = await createAppointmentRecord({
     clientName: input.clientName,
     clientPhone: input.clientPhone,
     startTime: input.start,
     endTime: input.end,
+    notes: input.notes,
   });
 
   const summary = `${input.clientName} — ${CLINIC_NAME}`;
-  const description = `Patient: ${input.clientName}\nPhone: +${input.clientPhone}\nBooked via WhatsApp bot.\nAppointment ID: ${appointment.id}`;
+  const description = [
+    `Patient: ${input.clientName}`,
+    `Phone: +${input.clientPhone}`,
+    input.notes ? `Concern: ${input.notes}` : null,
+    `Booked via WhatsApp bot.`,
+    `Appointment ID: ${appointment.id}`,
+  ]
+    .filter(Boolean)
+    .join("\n");
 
   try {
     const eventId = await createCalendarEvent({
@@ -54,6 +77,7 @@ export async function createAppointment(input: {
       startTime: appointment.startTime,
       endTime: appointment.endTime,
       status: appointment.status,
+      notes: appointment.notes,
       createdAt: appointment.createdAt,
     });
   } catch (err) {
@@ -75,7 +99,9 @@ export async function createAppointment(input: {
     try {
       await sendWhatsAppText(
         DOCTOR_WHATSAPP_NUMBER,
-        `New appointment booked ✅\n\nPatient: ${input.clientName}\nPhone: +${input.clientPhone}\n🗓 ${slotText}\n\nReply "cancel" to cancel an appointment, or "today"/"week" to view your schedule.`
+        `New appointment booked ✅\n\nPatient: ${input.clientName}\nPhone: +${input.clientPhone}\n🗓 ${slotText}${
+          input.notes ? `\nConcern: ${input.notes}` : ""
+        }\n\nReply "cancel" to cancel an appointment, or "today"/"week" to view your schedule.`
       );
     } catch (err) {
       console.error("Failed to notify doctor", err);

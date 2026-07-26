@@ -2,8 +2,22 @@
 // doctor's real working hours / appointment length without touching the
 // booking logic itself.
 
+// The clinic's real-world timezone. Deployed apps run on servers set to
+// UTC (Vercel included) — without this, "9 AM" working hours would mean
+// 9 AM UTC (2:30 PM IST), not 9 AM where the clinic actually is. All
+// availability math and displayed times are anchored to this zone.
+export const CLINIC_TIMEZONE = process.env.CLINIC_TIMEZONE || "Asia/Kolkata";
+
+// Fixed UTC offset in minutes for CLINIC_TIMEZONE, used to compute day/
+// working-hour boundaries. IST (Asia/Kolkata) is UTC+5:30 year-round with
+// no daylight saving, so a fixed number is safe here. If you change
+// CLINIC_TIMEZONE to a zone that observes DST, this needs to become
+// DST-aware (e.g. via a library like date-fns-tz) — a fixed offset alone
+// would drift by an hour part of the year.
+export const CLINIC_UTC_OFFSET_MINUTES = Number(process.env.CLINIC_UTC_OFFSET_MINUTES ?? 330);
+
 export const WORKING_HOURS = {
-  // 24-hour clock, local server time.
+  // 24-hour clock, in CLINIC_TIMEZONE.
   startHour: 9,
   endHour: 17,
   // 0 = Sunday ... 6 = Saturday. Default: closed Sunday (0) and Saturday (6).

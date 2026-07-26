@@ -1,5 +1,5 @@
 import { listAppointments } from "@/lib/db/appointments";
-import { CLINIC_NAME } from "@/lib/config";
+import { CLINIC_NAME, CLINIC_TIMEZONE } from "@/lib/config";
 
 export const dynamic = "force-dynamic";
 
@@ -10,6 +10,7 @@ const dateFmt = new Intl.DateTimeFormat("en-US", {
   year: "numeric",
   hour: "numeric",
   minute: "2-digit",
+  timeZone: CLINIC_TIMEZONE,
 });
 
 type FilterValue = "upcoming" | "all" | "cancelled";
