@@ -66,6 +66,24 @@ export async function sendWhatsAppImage(to: string, imageUrl: string, caption?: 
   });
 }
 
+/**
+ * Send a document (e.g. the generated PDF prescription slip) by URL — same
+ * "must be publicly fetchable" constraint as sendWhatsAppImage.
+ */
+export async function sendWhatsAppDocument(
+  to: string,
+  documentUrl: string,
+  filename: string,
+  caption?: string
+) {
+  return callGraphApi({
+    messaging_product: "whatsapp",
+    to,
+    type: "document",
+    document: { link: documentUrl, filename, ...(caption ? { caption } : {}) },
+  });
+}
+
 export interface ReplyButton {
   id: string; // becomes the incoming "text" when tapped — keep it matching whatever a typed reply would be (e.g. "book", "yes", "skip")
   title: string; // shown on the button, hard-capped at 20 chars by WhatsApp

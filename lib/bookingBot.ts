@@ -3,12 +3,14 @@ import { createDoctorBlock } from "./db/doctorBlocks";
 import {
   sendWhatsAppText,
   sendWhatsAppImage,
+  sendWhatsAppDocument,
   sendWhatsAppButtons,
   sendWhatsAppList,
   downloadWhatsAppMedia,
   type IncomingWhatsAppMessage,
 } from "./whatsapp";
-import { uploadPrescriptionPhoto } from "./storage";
+import { uploadPrescriptionPhoto, uploadDoctorSignature } from "./storage";
+import { getDoctorPrescriptionSettings, setSetting, SETTING_KEYS } from "./db/clinicSettings";
 import { getSession, resetSession, setSession } from "./db/chatSessions";
 import {
   getAvailableDates,
@@ -511,20 +513,35 @@ async function handlePrescriptionViewSelection(from: string, text: string, ids: 
 
   const slotText = formatSlot({ start: appointment.startTime, end: appointment.endTime });
 
+  // Any raw photo the doctor sent goes first (reference material), same as
+  // when the visit was originally completed.
   if (appointment.prescriptionPhotoUrl) {
     try {
-      await sendWhatsAppImage(
-        from,
-        appointment.prescriptionPhotoUrl,
-        `Prescription from ${slotText}${appointment.prescriptionNotes ? `\n${appointment.prescriptionNotes}` : ""}`
-      );
+      await sendWhatsAppImage(from, appointment.prescriptionPhotoUrl, `Photo from your visit on ${slotText}.`);
     } catch (err) {
       console.error("Failed to send prescription photo", err);
-      return sendWhatsAppText(from, "Sorry, I couldn't load that photo right now — please try again.");
     }
-  } else if (appointment.prescriptionNotes) {
+  }
+
+  if (appointment.prescriptionSlipUrl) {
+    // The exact signed PDF slip generated when the visit was completed —
+    // resent as-is, not regenerated, so it's always the same document.
+    try {
+      await sendWhatsAppDocument(
+        from,
+        appointment.prescriptionSlipUrl,
+        `Prescription-${appointment.id.replace(/-/g, "").slice(0, 8).toUpperCase()}.pdf`,
+        `Prescription from your visit on ${slotText}.`
+      );
+      return;
+    } catch (err) {
+      console.error("Failed to send prescription slip", err);
+    }
+  }
+
+  if (appointment.prescriptionNotes) {
     await sendWhatsAppText(from, `Prescription from ${slotText}:\n\n${appointment.prescriptionNotes}`);
-  } else {
+  } else if (!appointment.prescriptionPhotoUrl) {
     await sendWhatsAppText(from, "No prescription was recorded for that visit.");
   }
 }
@@ -654,6 +671,14 @@ async function handleDoctorMessage(
   if (step === "AWAITING_BLOCK_RANGE") {
     return handleBlockRangeInput(from, text, data.blockDate);
   }
+  if (step === "AWAITING_DOCTOR_SETUP_REG") {
+    return handleDoctorSetupReg(from, text, data.prescribeAppointmentId);
+  }
+  if (step === "AWAITING_DOCTOR_SETUP_SIGNATURE") {
+    return handleDoctorSetupSignature(from, image, data.prescribeAppointmentId);
+  }
+
+  if (lower === "setup") return startDoctorSetup(from, undefined, true);
 
   // "<number> complete" — e.g. "1 complete" (typed) or "1_complete" (tapped
   // from the list — row ids can't contain spaces, see sendClientMenu) —
@@ -685,6 +710,7 @@ async function sendDoctorMenu(to: string) {
           { id: "week", title: "This week" },
           { id: "cancel", title: "Cancel appointment" },
           { id: "block", title: "Block my time" },
+          { id: "setup", title: "Prescription setup" },
         ],
       },
     ]
@@ -751,15 +777,106 @@ async function startPrescriptionFlow(from: string, index: number, viewedAppointm
     );
   }
 
-  await setSession(from, "AWAITING_PRESCRIPTION", {
-    prescribeAppointmentId: viewedAppointments[index - 1],
-  });
+  const appointmentId = viewedAppointments[index - 1];
+
+  // One-time gate: a prescription slip needs the doctor's registration
+  // number and a saved signature. The first time either is missing, pause
+  // here and collect it instead of completing the visit with no way to
+  // build a proper slip — after this it's remembered, so every later visit
+  // completes with no extra step.
+  const settings = await getDoctorPrescriptionSettings();
+  if (!settings.registrationNumber || !settings.signatureUrl) {
+    return startDoctorSetup(from, appointmentId);
+  }
+
+  await setSession(from, "AWAITING_PRESCRIPTION", { prescribeAppointmentId: appointmentId });
 
   return sendWhatsAppButtons(
     from,
     `Marking that visit complete. Type the prescription/notes, send a photo of it (caption optional), or tap Skip to finish with no prescription attached.`,
     [{ id: "skip", title: "Skip" }]
   );
+}
+
+/**
+ * One-time capture of the doctor's registration number and signature photo
+ * — everything a generated prescription slip needs beyond what's already in
+ * the appointment record. `resumeAppointmentId` carries the in-progress
+ * visit through setup (if this was triggered by trying to complete one) so
+ * the doctor lands back in the prescription step right after, instead of
+ * having to start over. `forceRestart` is for the explicit "setup" command,
+ * which should let the doctor redo it (e.g. signature changed) even if both
+ * pieces are already saved.
+ */
+async function startDoctorSetup(
+  from: string,
+  resumeAppointmentId: string | undefined,
+  forceRestart = false
+) {
+  const settings = forceRestart
+    ? { registrationNumber: null, signatureUrl: null }
+    : await getDoctorPrescriptionSettings();
+
+  if (!settings.registrationNumber) {
+    await setSession(from, "AWAITING_DOCTOR_SETUP_REG", { prescribeAppointmentId: resumeAppointmentId });
+    return sendWhatsAppText(
+      from,
+      `One-time setup: what's your medical registration number? (printed on every prescription slip — only asked once, reply "setup" any time to change it later)`
+    );
+  }
+
+  if (!settings.signatureUrl) {
+    await setSession(from, "AWAITING_DOCTOR_SETUP_SIGNATURE", { prescribeAppointmentId: resumeAppointmentId });
+    return sendWhatsAppText(
+      from,
+      `Now send a photo of your signature — sign on plain paper and photograph it. This gets reused on every prescription slip, only asked once.`
+    );
+  }
+
+  // Both pieces are set — either resume the prescription that triggered
+  // setup, or just confirm if this was a manual "setup" run.
+  if (resumeAppointmentId) {
+    await setSession(from, "AWAITING_PRESCRIPTION", { prescribeAppointmentId: resumeAppointmentId });
+    return sendWhatsAppButtons(
+      from,
+      `Setup complete. Now, for that visit: type the prescription/notes, send a photo of it (caption optional), or tap Skip to finish with no prescription attached.`,
+      [{ id: "skip", title: "Skip" }]
+    );
+  }
+
+  await resetSession(from);
+  return sendWhatsAppText(from, `Setup saved. Reply "setup" any time to update your registration number or signature.`);
+}
+
+async function handleDoctorSetupReg(from: string, text: string, resumeAppointmentId: string | undefined) {
+  const trimmed = text.trim();
+  if (trimmed.length < 2) {
+    return sendWhatsAppText(from, "Please send your registration number (at least 2 characters).");
+  }
+
+  await setSetting(SETTING_KEYS.DOCTOR_REGISTRATION_NUMBER, trimmed);
+  return startDoctorSetup(from, resumeAppointmentId);
+}
+
+async function handleDoctorSetupSignature(
+  from: string,
+  image: { mediaId: string; mimeType: string } | undefined,
+  resumeAppointmentId: string | undefined
+) {
+  if (!image) {
+    return sendWhatsAppText(from, `Please send a photo of your signature to finish setup.`);
+  }
+
+  try {
+    const { buffer, mimeType } = await downloadWhatsAppMedia(image.mediaId);
+    const signatureUrl = await uploadDoctorSignature(buffer, mimeType);
+    await setSetting(SETTING_KEYS.DOCTOR_SIGNATURE_URL, signatureUrl);
+  } catch (err) {
+    console.error("Failed to save doctor signature", err);
+    return sendWhatsAppText(from, "Sorry, I couldn't process that photo — please try sending it again.");
+  }
+
+  return startDoctorSetup(from, resumeAppointmentId);
 }
 
 async function handlePrescriptionInput(

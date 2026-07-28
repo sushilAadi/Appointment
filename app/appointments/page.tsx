@@ -90,12 +90,20 @@ export default async function AppointmentsPage({
                         `${a.cancellationReason ?? "—"}${a.cancelledBy ? ` (by ${a.cancelledBy.toLowerCase()})` : ""}`}
                       {a.status === "COMPLETED" && (
                         <>
-                          {a.prescriptionNotes ?? (a.prescriptionPhotoUrl ? "" : "—")}
+                          {a.prescriptionNotes ?? (a.prescriptionPhotoUrl || a.prescriptionSlipUrl ? "" : "—")}
                           {a.prescriptionPhotoUrl && (
                             <>
-                              {a.prescriptionNotes ? " " : ""}
+                              {" "}
                               <a href={a.prescriptionPhotoUrl} target="_blank" rel="noreferrer">
                                 view photo
+                              </a>
+                            </>
+                          )}
+                          {a.prescriptionSlipUrl && (
+                            <>
+                              {" "}
+                              <a href={a.prescriptionSlipUrl} target="_blank" rel="noreferrer">
+                                view signed slip
                               </a>
                             </>
                           )}

@@ -25,6 +25,7 @@ create table if not exists appointments (
 alter table appointments add column if not exists cancellation_reason text;
 alter table appointments add column if not exists prescription_notes text;
 alter table appointments add column if not exists prescription_photo_url text;
+alter table appointments add column if not exists prescription_slip_url text;
 alter table appointments add column if not exists completed_at timestamptz;
 
 -- Allow the new COMPLETED status. This targets the default constraint name
@@ -62,6 +63,16 @@ create table if not exists doctor_blocks (
 create index if not exists doctor_blocks_start_time_idx on doctor_blocks (start_time);
 create index if not exists doctor_blocks_end_time_idx on doctor_blocks (end_time);
 
+-- Small key/value store for one-time doctor setup done through the WhatsApp
+-- bot itself — currently the doctor's registration number and a saved photo
+-- of their signature, used to auto-build a proper signed prescription slip
+-- every time a visit is completed, without the doctor re-entering either.
+create table if not exists clinic_settings (
+  key        text primary key,
+  value      text not null,
+  updated_at timestamptz not null default now()
+);
+
 -- Per-phone-number WhatsApp conversation state for the booking bot.
 create table if not exists chat_sessions (
   id         uuid primary key default gen_random_uuid(),
@@ -91,6 +102,11 @@ create trigger chat_sessions_set_updated_at
   before update on chat_sessions
   for each row execute procedure set_updated_at();
 
+drop trigger if exists clinic_settings_set_updated_at on clinic_settings;
+create trigger clinic_settings_set_updated_at
+  before update on clinic_settings
+  for each row execute procedure set_updated_at();
+
 -- Row Level Security: enabled by default with no policies, which blocks
 -- every request made with the anon/publishable key. This app never uses
 -- that key — the Next.js server talks to Supabase with the secret
@@ -100,6 +116,7 @@ create trigger chat_sessions_set_updated_at
 alter table appointments enable row level security;
 alter table chat_sessions enable row level security;
 alter table doctor_blocks enable row level security;
+alter table clinic_settings enable row level security;
 
 -- ---------------------------------------------------------------------------
 -- Storage bucket for prescription photos

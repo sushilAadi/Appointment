@@ -25,6 +25,7 @@ export interface Appointment {
   cancellationReason: string | null;
   prescriptionNotes: string | null;
   prescriptionPhotoUrl: string | null;
+  prescriptionSlipUrl: string | null;
   completedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
@@ -45,6 +46,7 @@ interface AppointmentRow {
   cancellation_reason: string | null;
   prescription_notes: string | null;
   prescription_photo_url: string | null;
+  prescription_slip_url: string | null;
   completed_at: string | null;
   created_at: string;
   updated_at: string;
@@ -64,6 +66,7 @@ function mapRow(row: AppointmentRow): Appointment {
     cancellationReason: row.cancellation_reason,
     prescriptionNotes: row.prescription_notes,
     prescriptionPhotoUrl: row.prescription_photo_url,
+    prescriptionSlipUrl: row.prescription_slip_url,
     completedAt: row.completed_at ? new Date(row.completed_at) : null,
     createdAt: new Date(row.created_at),
     updatedAt: new Date(row.updated_at),
@@ -172,6 +175,25 @@ export async function markAppointmentComplete(
     .select()
     .maybeSingle();
   if (error) throw new Error(`Failed to mark appointment complete: ${error.message}`);
+  return data ? mapRow(data as AppointmentRow) : null;
+}
+
+/**
+ * Saves the generated PDF slip's URL onto the appointment once it's built
+ * (built after markAppointmentComplete, since the slip embeds the
+ * appointment's own id as its unique Rx number) — so re-viewing this
+ * prescription later resends the exact original signed document instead of
+ * regenerating a new one.
+ */
+export async function setAppointmentPrescriptionSlipUrl(id: string, slipUrl: string): Promise<Appointment | null> {
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase
+    .from("appointments")
+    .update({ prescription_slip_url: slipUrl })
+    .eq("id", id)
+    .select()
+    .maybeSingle();
+  if (error) throw new Error(`Failed to save prescription slip url: ${error.message}`);
   return data ? mapRow(data as AppointmentRow) : null;
 }
 

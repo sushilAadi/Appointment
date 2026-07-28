@@ -5,6 +5,7 @@ import {
   isSlotTaken,
   markAppointmentComplete,
   setAppointmentGoogleEventId,
+  setAppointmentPrescriptionSlipUrl,
   SlotUnavailableError,
   type Appointment,
 } from "./db/appointments";
@@ -12,9 +13,23 @@ import {
 export { SlotUnavailableError };
 import { createCalendarEvent, deleteCalendarEvent } from "./calendar";
 import { appendAppointmentRow, updateAppointmentStatusInSheet } from "./sheets";
-import { sendWhatsAppText, sendWhatsAppImage } from "./whatsapp";
+import { sendWhatsAppText, sendWhatsAppImage, sendWhatsAppDocument } from "./whatsapp";
 import { CLINIC_NAME, DOCTOR_NAME, DOCTOR_WHATSAPP_NUMBER } from "./config";
 import { formatSlot } from "./availability";
+import { getDoctorPrescriptionSettings } from "./db/clinicSettings";
+import { generatePrescriptionSlipPdf } from "./prescriptionSlip";
+import { uploadPrescriptionSlip } from "./storage";
+
+/**
+ * Short, unique per-visit reference printed on the prescription slip. Not a
+ * separate counter to maintain — it's derived from the appointment's own
+ * database id, which already can't collide or be reissued, since an
+ * appointment can only be completed once. Just formatted to be short enough
+ * for a patient or pharmacist to read back over the phone.
+ */
+function prescriptionNumberFor(appointmentId: string): string {
+  return `RX-${appointmentId.replace(/-/g, "").slice(0, 8).toUpperCase()}`;
+}
 
 /**
  * Single entry point for creating a booking. Writes the DB row, creates the
@@ -200,28 +215,77 @@ export async function completeAppointment(
 
   const slotText = formatSlot({ start: updated.startTime, end: updated.endTime });
 
-  try {
-    if (updated.prescriptionPhotoUrl) {
+  // Any raw photo the doctor sent (e.g. a handwritten note) goes to the
+  // patient as-is, same as before — it's a reference, not the official
+  // record.
+  if (updated.prescriptionPhotoUrl) {
+    try {
       await sendWhatsAppImage(
         updated.clientPhone,
         updated.prescriptionPhotoUrl,
-        `Prescription from your visit on ${slotText} with ${DOCTOR_NAME}.${
-          updated.prescriptionNotes ? `\n${updated.prescriptionNotes}` : ""
-        }`
+        `Photo from your visit on ${slotText} with ${DOCTOR_NAME}.`
       );
-    } else if (updated.prescriptionNotes) {
-      await sendWhatsAppText(
-        updated.clientPhone,
-        `Your visit on ${slotText} is complete. Prescription/notes from ${DOCTOR_NAME}:\n\n${updated.prescriptionNotes}`
-      );
-    } else {
+    } catch (err) {
+      console.error("Failed to send prescription photo", err);
+    }
+  }
+
+  if (updated.prescriptionNotes) {
+    // Typed notes become the official record: a formatted, signed PDF slip
+    // (clinic name, doctor name + registration number, patient details, the
+    // medicines as typed, a unique Rx number, and the doctor's saved
+    // signature) — this is what makes a typed WhatsApp message function as
+    // a real prescription instead of just a casual note.
+    try {
+      const settings = await getDoctorPrescriptionSettings();
+      if (settings.registrationNumber && settings.signatureUrl) {
+        const pdfBuffer = await generatePrescriptionSlipPdf({
+          prescriptionNumber: prescriptionNumberFor(updated.id),
+          doctorRegistrationNumber: settings.registrationNumber,
+          signatureUrl: settings.signatureUrl,
+          patientName: updated.clientName,
+          patientPhone: updated.clientPhone,
+          visitDateLabel: slotText,
+          medicines: updated.prescriptionNotes,
+        });
+        const slipUrl = await uploadPrescriptionSlip(pdfBuffer);
+        await setAppointmentPrescriptionSlipUrl(updated.id, slipUrl);
+        await sendWhatsAppDocument(
+          updated.clientPhone,
+          slipUrl,
+          `Prescription-${prescriptionNumberFor(updated.id)}.pdf`,
+          `Prescription from your visit on ${slotText} with ${DOCTOR_NAME}.`
+        );
+      } else {
+        // Doctor setup (registration number / signature) isn't complete yet
+        // — fall back to plain text rather than block the notification.
+        await sendWhatsAppText(
+          updated.clientPhone,
+          `Your visit on ${slotText} is complete. Notes from ${DOCTOR_NAME}:\n\n${updated.prescriptionNotes}`
+        );
+      }
+    } catch (err) {
+      console.error("Failed to generate/send prescription slip", err);
+      try {
+        await sendWhatsAppText(
+          updated.clientPhone,
+          `Your visit on ${slotText} is complete. Notes from ${DOCTOR_NAME}:\n\n${updated.prescriptionNotes}`
+        );
+      } catch (err2) {
+        console.error("Failed to send fallback prescription text", err2);
+      }
+    }
+  }
+
+  if (!updated.prescriptionPhotoUrl && !updated.prescriptionNotes) {
+    try {
       await sendWhatsAppText(
         updated.clientPhone,
         `Your visit on ${slotText} with ${DOCTOR_NAME} has been marked complete. Thank you!`
       );
+    } catch (err) {
+      console.error("Failed to notify client of completed visit", err);
     }
-  } catch (err) {
-    console.error("Failed to notify client of completed visit", err);
   }
 
   return updated;

@@ -12,7 +12,9 @@ export type SessionStep =
   | "AWAITING_PRESCRIPTION"
   | "AWAITING_PRESCRIPTION_VIEW"
   | "AWAITING_BLOCK_DATE"
-  | "AWAITING_BLOCK_RANGE";
+  | "AWAITING_BLOCK_RANGE"
+  | "AWAITING_DOCTOR_SETUP_REG"
+  | "AWAITING_DOCTOR_SETUP_SIGNATURE";
 
 export interface SessionData {
   clientName?: string;
