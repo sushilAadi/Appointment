@@ -857,7 +857,8 @@ async function startDoctorSetup(
   }
 
   await resetSession(from);
-  return sendWhatsAppText(from, `Setup saved. Reply "setup" any time to update your registration number or signature.`);
+  await sendWhatsAppText(from, `Setup saved. Reply "setup" any time to update your registration number or signature.`);
+  return sendDoctorMenu(from);
 }
 
 async function handleDoctorSetupReg(from: string, text: string, resumeAppointmentId: string | undefined) {
