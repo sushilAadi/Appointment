@@ -173,3 +173,23 @@ export function buildSlotListMessage(slots: SlotWithAvailability[]): {
 
   return { message: lines.join("\n").trim(), offeredSlots };
 }
+
+/**
+ * Turns the same `offeredSlots` shown in `buildSlotListMessage` into rows for
+ * a tappable WhatsApp list message. Row `id` is the 1-based index as a
+ * string, matching exactly what a patient typing that number would send —
+ * so tapping and typing both resolve the same way downstream.
+ */
+export function buildSlotListRows(
+  offeredSlots: { start: string; end: string }[]
+): { id: string; title: string; description: string }[] {
+  return offeredSlots.map((s, i) => {
+    const start = new Date(s.start);
+    const end = new Date(s.end);
+    return {
+      id: String(i + 1),
+      title: formatSlotTimeRange({ start, end }),
+      description: formatSlotDate(start),
+    };
+  });
+}

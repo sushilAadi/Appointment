@@ -66,6 +66,78 @@ export async function sendWhatsAppImage(to: string, imageUrl: string, caption?: 
   });
 }
 
+export interface ReplyButton {
+  id: string; // becomes the incoming "text" when tapped — keep it matching whatever a typed reply would be (e.g. "book", "yes", "skip")
+  title: string; // shown on the button, hard-capped at 20 chars by WhatsApp
+}
+
+export interface ListRow {
+  id: string; // becomes the incoming "text" when tapped
+  title: string; // hard-capped at 24 chars by WhatsApp
+  description?: string; // hard-capped at 72 chars by WhatsApp
+}
+
+export interface ListSection {
+  title?: string; // hard-capped at 24 chars by WhatsApp
+  rows: ListRow[];
+}
+
+/** Up to 3 tappable quick-reply buttons under a body message. */
+export async function sendWhatsAppButtons(
+  to: string,
+  body: string,
+  buttons: ReplyButton[],
+  footer?: string
+) {
+  return callGraphApi({
+    messaging_product: "whatsapp",
+    to,
+    type: "interactive",
+    interactive: {
+      type: "button",
+      body: { text: body },
+      ...(footer ? { footer: { text: footer } } : {}),
+      action: {
+        buttons: buttons.slice(0, 3).map((b) => ({
+          type: "reply",
+          reply: { id: b.id, title: b.title.slice(0, 20) },
+        })),
+      },
+    },
+  });
+}
+
+/** A single "Choose an option" button that opens a tappable list of up to 10 rows total. */
+export async function sendWhatsAppList(
+  to: string,
+  body: string,
+  buttonLabel: string,
+  sections: ListSection[],
+  footer?: string
+) {
+  return callGraphApi({
+    messaging_product: "whatsapp",
+    to,
+    type: "interactive",
+    interactive: {
+      type: "list",
+      body: { text: body },
+      ...(footer ? { footer: { text: footer } } : {}),
+      action: {
+        button: buttonLabel.slice(0, 20),
+        sections: sections.map((s) => ({
+          ...(s.title ? { title: s.title.slice(0, 24) } : {}),
+          rows: s.rows.slice(0, 10).map((r) => ({
+            id: r.id,
+            title: r.title.slice(0, 24),
+            ...(r.description ? { description: r.description.slice(0, 72) } : {}),
+          })),
+        })),
+      },
+    },
+  });
+}
+
 /**
  * Downloads media (e.g. a photo the doctor sent the bot) from Meta's Graph
  * API. This is a two-step process: first resolve the media id to a
@@ -135,10 +207,13 @@ export function parseIncomingWebhook(payload: any): IncomingWhatsAppMessage[] {
         if (msg.type === "text") {
           text = msg.text?.body ?? "";
         } else if (msg.type === "interactive") {
-          text =
-            msg.interactive?.button_reply?.title ??
-            msg.interactive?.list_reply?.title ??
-            "";
+          // Tapping a reply button or a list row sends back its `id`, not
+          // its display `title` — every button/list we send sets `id` to
+          // the exact string a typed reply would produce (e.g. "book",
+          // "yes", "3 complete"), so the rest of the bot's parsing logic
+          // doesn't need to know whether the user tapped or typed.
+          const reply = msg.interactive?.button_reply ?? msg.interactive?.list_reply;
+          text = reply?.id ?? reply?.title ?? "";
         } else if (msg.type === "button") {
           text = msg.button?.text ?? "";
         } else if (msg.type === "image") {

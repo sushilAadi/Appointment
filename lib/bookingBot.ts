@@ -2,12 +2,20 @@ import { listAppointments } from "./db/appointments";
 import {
   sendWhatsAppText,
   sendWhatsAppImage,
+  sendWhatsAppButtons,
+  sendWhatsAppList,
   downloadWhatsAppMedia,
   type IncomingWhatsAppMessage,
 } from "./whatsapp";
 import { uploadPrescriptionPhoto } from "./storage";
 import { getSession, resetSession, setSession } from "./db/chatSessions";
-import { getSlotsWithAvailability, buildSlotListMessage, formatSlot } from "./availability";
+import {
+  getSlotsWithAvailability,
+  buildSlotListMessage,
+  buildSlotListRows,
+  formatSlot,
+  formatSlotTimeRange,
+} from "./availability";
 import {
   createAppointment,
   cancelAppointment,
@@ -68,10 +76,11 @@ async function handleClientMessage(from: string, text: string) {
 }
 
 async function sendClientMenu(to: string) {
-  await sendWhatsAppText(
-    to,
-    `👋 Welcome to ${CLINIC_NAME}.\n\nReply:\n1️⃣ "book" — book an appointment with ${DOCTOR_NAME}\n2️⃣ "my appointments" — view your upcoming &amp; past appointments\n3️⃣ "cancel" — cancel an upcoming appointment`
-  );
+  await sendWhatsAppButtons(to, `👋 Welcome to ${CLINIC_NAME}. What would you like to do?`, [
+    { id: "book", title: "Book" },
+    { id: "my appointments", title: "My Appointments" },
+    { id: "cancel", title: "Cancel" },
+  ]);
 }
 
 async function handleClientIdle(from: string, lower: string) {
@@ -109,9 +118,10 @@ async function startBookingFlow(from: string) {
 
   if (priorName) {
     await setSession(from, "AWAITING_NAME", { suggestedName: priorName });
-    return sendWhatsAppText(
+    return sendWhatsAppButtons(
       from,
-      `Welcome back to ${CLINIC_NAME}! Your last visit was booked for "${priorName}".\n\nReply "yes" to book again for ${priorName}, or type a different patient's name.`
+      `Welcome back to ${CLINIC_NAME}! Your last visit was booked for "${priorName}". Tap below to reuse that name, or just type a different patient's name.`,
+      [{ id: "yes", title: `Yes, ${priorName}`.slice(0, 20) }]
     );
   }
 
@@ -147,9 +157,20 @@ async function handleAwaitingName(from: string, text: string, suggestedName?: st
     offeredSlots,
   });
 
-  return sendWhatsAppText(
+  await sendWhatsAppText(
     from,
-    `Thanks! Here are the times with ${DOCTOR_NAME} (❌ = already booked):\n${list}\n\nReply with the number of the time that works best.`
+    `Thanks! Here are the times with ${DOCTOR_NAME} (❌ = already booked):\n${list}`
+  );
+  return sendSlotPicker(from, offeredSlots);
+}
+
+/** Sends the tappable list of available slots; row id = the same number a typed reply would be. */
+async function sendSlotPicker(to: string, offeredSlots: { start: string; end: string }[]) {
+  return sendWhatsAppList(
+    to,
+    "Tap a time to pick it, or just type its number.",
+    "Choose a time",
+    [{ title: "Available times", rows: buildSlotListRows(offeredSlots) }]
   );
 }
 
@@ -189,9 +210,13 @@ async function handleAwaitingSlotSelection(
       clientName,
       selectedSlot: slot,
     });
-    return sendWhatsAppText(
+    return sendWhatsAppButtons(
       from,
-      `Heads up — you already have an appointment booked that day at ${times}. Do you want to book another one? Reply "yes" to continue, or "no" to cancel.`
+      `Heads up — you already have an appointment booked that day at ${times}. Do you want to book another one?`,
+      [
+        { id: "yes", title: "Yes, book" },
+        { id: "no", title: "No, cancel" },
+      ]
     );
   }
 
@@ -200,9 +225,15 @@ async function handleAwaitingSlotSelection(
     selectedSlot: slot,
   });
 
-  return sendWhatsAppText(
-    from,
-    `Got it. Any specific concern or reason for the visit? (optional — reply "skip" to leave it blank)`
+  return sendConcernPrompt(from);
+}
+
+/** Asks for an optional visit concern, with a Skip button alongside free text. */
+async function sendConcernPrompt(to: string) {
+  return sendWhatsAppButtons(
+    to,
+    `Got it. Any specific concern or reason for the visit? (optional — type it, or tap Skip)`,
+    [{ id: "skip", title: "Skip" }]
   );
 }
 
@@ -232,10 +263,7 @@ async function handleDuplicateBookingConfirm(
 
   if (lower === "yes" || lower === "y") {
     await setSession(from, "AWAITING_CONCERN", { clientName, selectedSlot });
-    return sendWhatsAppText(
-      from,
-      `Got it. Any specific concern or reason for the visit? (optional — reply "skip" to leave it blank)`
-    );
+    return sendConcernPrompt(from);
   }
 
   if (lower === "no" || lower === "n") {
@@ -285,10 +313,11 @@ async function handleAwaitingConcern(
       }
 
       await setSession(from, "AWAITING_SLOT_SELECTION", { clientName, offeredSlots });
-      return sendWhatsAppText(
+      await sendWhatsAppText(
         from,
-        `Sorry, that time was just booked by someone else. Here are the current times (❌ = already booked):\n${list}\n\nReply with the number of the time that works best.`
+        `Sorry, that time was just booked by someone else. Here are the current times (❌ = already booked):\n${list}`
       );
+      return sendSlotPicker(from, offeredSlots);
     }
     throw err;
   }
@@ -347,6 +376,7 @@ async function startCancelFlow(from: string) {
     clientPhone: from,
     status: "CONFIRMED",
     startFrom: new Date(),
+    limit: 10, // matches the WhatsApp list message's 10-row cap
   });
 
   if (appointments.length === 0) {
@@ -354,17 +384,24 @@ async function startCancelFlow(from: string) {
     return sendWhatsAppText(from, "You have no upcoming appointments to cancel.");
   }
 
-  const list = appointments
-    .map((a, i) => `${i + 1}. ${formatSlot({ start: a.startTime, end: a.endTime })}`)
-    .join("\n");
-
   await setSession(from, "AWAITING_CANCEL_SELECTION", {
     cancellableAppointments: appointments.map((a) => a.id),
   });
 
-  return sendWhatsAppText(
+  return sendWhatsAppList(
     from,
-    `Which appointment would you like to cancel?\n\n${list}\n\nReply with a number, or "menu" to go back.`
+    `Which appointment would you like to cancel? Tap one, or type its number.`,
+    "Select appointment",
+    [
+      {
+        title: "Your appointments",
+        rows: appointments.map((a, i) => ({
+          id: String(i + 1),
+          title: formatSlotTimeRange({ start: a.startTime, end: a.endTime }),
+          description: formatSlot({ start: a.startTime, end: a.endTime }),
+        })),
+      },
+    ]
   );
 }
 
@@ -380,9 +417,10 @@ async function handleClientCancelSelection(from: string, text: string, ids: stri
   }
 
   await setSession(from, "AWAITING_CANCEL_REASON", { cancelAppointmentId: ids[choice - 1] });
-  return sendWhatsAppText(
+  return sendWhatsAppButtons(
     from,
-    `Got it. Any reason for cancelling? (optional — reply "skip" to leave it blank)`
+    `Got it. Any reason for cancelling? (optional — type it, or tap Skip)`,
+    [{ id: "skip", title: "Skip" }]
   );
 }
 
@@ -458,9 +496,14 @@ async function handleDoctorMessage(
   if (lower === "2" || lower === "week") return listDoctorAppointments(from, "week");
   if (lower === "3" || lower === "cancel") return startDoctorCancelFlow(from);
 
-  return sendWhatsAppText(
+  return sendWhatsAppButtons(
     from,
-    `Hi ${DOCTOR_NAME}. Reply:\n1️⃣ "today" — today's appointments\n2️⃣ "week" — this week's appointments\n3️⃣ "cancel" — cancel an appointment\n\nAfter viewing today/week, reply "<number> complete" (e.g. "1 complete") to mark a visit done and add a prescription.`
+    `Hi ${DOCTOR_NAME}. What would you like to do? (After viewing today/week, tap a patient's row to mark that visit complete and add a prescription.)`,
+    [
+      { id: "today", title: "Today" },
+      { id: "week", title: "This week" },
+      { id: "cancel", title: "Cancel appt" },
+    ]
   );
 }
 
@@ -487,9 +530,27 @@ async function listDoctorAppointments(from: string, range: "today" | "week") {
   // number refers to.
   await setSession(from, "IDLE", { viewedAppointments: appointments.map((a) => a.id) });
 
-  return sendWhatsAppText(
+  await sendWhatsAppText(
     from,
-    `Appointments ${range === "today" ? "today" : "this week"}:\n\n${list}\n\nReply "<number> complete" to mark a visit done and add a prescription.`
+    `Appointments ${range === "today" ? "today" : "this week"}:\n\n${list}`
+  );
+
+  // Row id is "<n> complete" — tapping a patient goes straight into the
+  // prescription flow for that visit, same as typing "1 complete" would.
+  return sendWhatsAppList(
+    from,
+    `Tap a patient once their visit is done to mark it complete and add a prescription.`,
+    "Mark complete",
+    [
+      {
+        title: "Appointments",
+        rows: appointments.map((a, i) => ({
+          id: `${i + 1} complete`,
+          title: a.clientName.slice(0, 24),
+          description: formatSlot({ start: a.startTime, end: a.endTime }),
+        })),
+      },
+    ]
   );
 }
 
@@ -505,9 +566,10 @@ async function startPrescriptionFlow(from: string, index: number, viewedAppointm
     prescribeAppointmentId: viewedAppointments[index - 1],
   });
 
-  return sendWhatsAppText(
+  return sendWhatsAppButtons(
     from,
-    `Marking that visit complete. Type the prescription/notes, send a photo of it (caption optional), or reply "skip" to finish with no prescription attached.`
+    `Marking that visit complete. Type the prescription/notes, send a photo of it (caption optional), or tap Skip to finish with no prescription attached.`,
+    [{ id: "skip", title: "Skip" }]
   );
 }
 
@@ -559,22 +621,32 @@ async function startDoctorCancelFlow(from: string) {
   const appointments = await listAppointments({
     status: "CONFIRMED",
     startFrom: new Date(),
-    limit: 15,
+    limit: 10, // matches the WhatsApp list message's 10-row cap
   });
 
   if (appointments.length === 0) {
     return sendWhatsAppText(from, "There are no upcoming appointments to cancel.");
   }
 
-  const list = appointments
-    .map((a, i) => `${i + 1}. ${formatSlot({ start: a.startTime, end: a.endTime })} — ${a.clientName}`)
-    .join("\n");
-
   await setSession(from, "AWAITING_CANCEL_SELECTION", {
     cancellableAppointments: appointments.map((a) => a.id),
   });
 
-  return sendWhatsAppText(from, `Which appointment would you like to cancel?\n\n${list}`);
+  return sendWhatsAppList(
+    from,
+    `Which appointment would you like to cancel? Tap one, or type its number.`,
+    "Select appointment",
+    [
+      {
+        title: "Upcoming appointments",
+        rows: appointments.map((a, i) => ({
+          id: String(i + 1),
+          title: a.clientName.slice(0, 24),
+          description: formatSlot({ start: a.startTime, end: a.endTime }),
+        })),
+      },
+    ]
+  );
 }
 
 async function handleDoctorCancelSelection(from: string, text: string, ids: string[]) {
