@@ -40,7 +40,12 @@ export async function handleIncomingMessage(message: IncomingWhatsAppMessage) {
 // Client (patient) side
 // ---------------------------------------------------------------------------
 
-const GREETING_WORDS = ["hi", "hello", "hey", "start", "menu"];
+const GREETING_WORDS = ["hi", "hello", "hey", "start"];
+
+// Every "Menu" button we send taps out to this same id, so it works as a
+// global escape hatch from any step — mirrors how "cancel" already resets
+// from anywhere. Kept as a shared constant so every prompt offers the same button.
+const MENU_BUTTON = { id: "menu", title: "Menu" };
 
 async function handleClientMessage(from: string, text: string) {
   const { step, data } = await getSession(from);
@@ -50,8 +55,12 @@ async function handleClientMessage(from: string, text: string) {
   if (lower === "cancel" && step !== "AWAITING_CANCEL_SELECTION") {
     return startCancelFlow(from);
   }
-  if (lower === "menu" || lower === "start" || lower === "hi" || lower === "hello") {
-    if (step === "IDLE") return sendClientMenu(from);
+  if (lower === "menu") {
+    await resetSession(from);
+    return sendClientMenu(from);
+  }
+  if (step === "IDLE" && GREETING_WORDS.includes(lower)) {
+    return sendClientMenu(from);
   }
 
   switch (step) {
@@ -76,23 +85,33 @@ async function handleClientMessage(from: string, text: string) {
 }
 
 async function sendClientMenu(to: string) {
+  // Button/list row ids can't contain spaces — Meta's Graph API silently
+  // rejects the whole interactive message if one does (this is why the
+  // client menu could go fully silent while the doctor's menu, whose ids
+  // have no spaces, kept working). Use underscores instead.
   await sendWhatsAppButtons(to, `👋 Welcome to ${CLINIC_NAME}. What would you like to do?`, [
     { id: "book", title: "Book" },
-    { id: "my appointments", title: "My Appointments" },
+    { id: "my_appointments", title: "My Appointments" },
     { id: "cancel", title: "Cancel" },
   ]);
 }
 
 async function handleClientIdle(from: string, lower: string) {
-  if (GREETING_WORDS.includes(lower)) {
-    return sendClientMenu(from);
-  }
+  // Greetings are already handled in handleClientMessage before reaching
+  // here (it only calls this for step === "IDLE"); nothing left to do for
+  // them at this point.
 
   // "2"/"3" (numeric shortcuts matching the menu) checked BEFORE "1"/book,
   // and "my appointments" checked before the generic "book" text match —
   // "my appointments" contains the substring "appointment", so it must be
   // matched first or it'd be swallowed by the booking branch below.
-  if (lower === "2" || lower.includes("my appointment") || lower === "status" || lower.includes("upcoming")) {
+  if (
+    lower === "2" ||
+    lower === "my_appointments" ||
+    lower.includes("my appointment") ||
+    lower === "status" ||
+    lower.includes("upcoming")
+  ) {
     return listClientAppointments(from);
   }
 
@@ -146,9 +165,10 @@ async function handleAwaitingName(from: string, text: string, suggestedName?: st
 
   if (offeredSlots.length === 0) {
     await resetSession(from);
-    return sendWhatsAppText(
+    return sendWhatsAppButtons(
       from,
-      `Sorry, ${DOCTOR_NAME} has no open slots in the next week. Please try again later.`
+      `Sorry, ${DOCTOR_NAME} has no open slots in the next week. Please try again later.`,
+      [MENU_BUTTON]
     );
   }
 
@@ -181,9 +201,10 @@ async function handleAwaitingSlotSelection(
 ) {
   const choice = parseInt(text.trim(), 10);
   if (!Number.isInteger(choice) || choice < 1 || choice > offeredSlots.length) {
-    return sendWhatsAppText(
+    return sendWhatsAppButtons(
       from,
-      `Please reply with a number between 1 and ${offeredSlots.length}, or "menu" to start over.`
+      `Please reply with a number between 1 and ${offeredSlots.length}, or tap Menu to start over.`,
+      [MENU_BUTTON]
     );
   }
 
@@ -216,6 +237,7 @@ async function handleAwaitingSlotSelection(
       [
         { id: "yes", title: "Yes, book" },
         { id: "no", title: "No, cancel" },
+        MENU_BUTTON,
       ]
     );
   }
@@ -251,15 +273,13 @@ async function handleDuplicateBookingConfirm(
   if (!selectedSlot) {
     // Session data got lost somehow — restart cleanly rather than crash.
     await resetSession(from);
-    return sendWhatsAppText(from, `Something went wrong — let's start over. Reply "book" to try again.`);
+    return sendWhatsAppButtons(from, `Something went wrong — let's start over.`, [MENU_BUTTON]);
   }
 
   const lower = text.trim().toLowerCase();
 
-  if (lower === "menu") {
-    await resetSession(from);
-    return sendClientMenu(from);
-  }
+  // "menu" is handled globally in handleClientMessage before this function
+  // is ever called, so it doesn't need its own check here.
 
   if (lower === "yes" || lower === "y") {
     await setSession(from, "AWAITING_CONCERN", { clientName, selectedSlot });
@@ -268,10 +288,18 @@ async function handleDuplicateBookingConfirm(
 
   if (lower === "no" || lower === "n") {
     await resetSession(from);
-    return sendWhatsAppText(from, `No problem — that booking wasn't made. Reply "menu" any time to start over.`);
+    return sendWhatsAppButtons(from, `No problem — that booking wasn't made.`, [MENU_BUTTON]);
   }
 
-  return sendWhatsAppText(from, `Please reply "yes" to book another appointment that day, or "no" to cancel.`);
+  return sendWhatsAppButtons(
+    from,
+    `Please reply "yes" to book another appointment that day, or "no" to cancel.`,
+    [
+      { id: "yes", title: "Yes, book" },
+      { id: "no", title: "No, cancel" },
+      MENU_BUTTON,
+    ]
+  );
 }
 
 async function handleAwaitingConcern(
@@ -283,7 +311,7 @@ async function handleAwaitingConcern(
   if (!selectedSlot) {
     // Session data got lost somehow — restart cleanly rather than crash.
     await resetSession(from);
-    return sendWhatsAppText(from, `Something went wrong — let's start over. Reply "book" to try again.`);
+    return sendWhatsAppButtons(from, `Something went wrong — let's start over.`, [MENU_BUTTON]);
   }
 
   const lower = text.trim().toLowerCase();
@@ -306,9 +334,10 @@ async function handleAwaitingConcern(
 
       if (offeredSlots.length === 0) {
         await resetSession(from);
-        return sendWhatsAppText(
+        return sendWhatsAppButtons(
           from,
-          `Sorry, that time was just booked by someone else, and there are no other open slots right now. Please try again later.`
+          `Sorry, that time was just booked by someone else, and there are no other open slots right now. Please try again later.`,
+          [MENU_BUTTON]
         );
       }
 
@@ -333,7 +362,10 @@ async function listClientAppointments(from: string) {
   ]);
 
   if (upcoming.length === 0 && past.length === 0) {
-    return sendWhatsAppText(from, "You have no appointments yet. Reply \"book\" to schedule one.");
+    return sendWhatsAppButtons(from, "You have no appointments yet.", [
+      { id: "book", title: "Book" },
+      MENU_BUTTON,
+    ]);
   }
 
   const lines: string[] = [];
@@ -381,7 +413,7 @@ async function startCancelFlow(from: string) {
 
   if (appointments.length === 0) {
     await resetSession(from);
-    return sendWhatsAppText(from, "You have no upcoming appointments to cancel.");
+    return sendWhatsAppButtons(from, "You have no upcoming appointments to cancel.", [MENU_BUTTON]);
   }
 
   await setSession(from, "AWAITING_CANCEL_SELECTION", {
@@ -406,14 +438,15 @@ async function startCancelFlow(from: string) {
 }
 
 async function handleClientCancelSelection(from: string, text: string, ids: string[]) {
-  if (text.toLowerCase() === "menu") {
-    await resetSession(from);
-    return sendClientMenu(from);
-  }
-
+  // "menu" is handled globally in handleClientMessage before this function
+  // is ever called, so it doesn't need its own check here.
   const choice = parseInt(text.trim(), 10);
   if (!Number.isInteger(choice) || choice < 1 || choice > ids.length) {
-    return sendWhatsAppText(from, `Please reply with a number between 1 and ${ids.length}.`);
+    return sendWhatsAppButtons(
+      from,
+      `Please reply with a number between 1 and ${ids.length}, or tap Menu to start over.`,
+      [MENU_BUTTON]
+    );
   }
 
   await setSession(from, "AWAITING_CANCEL_REASON", { cancelAppointmentId: ids[choice - 1] });
@@ -438,7 +471,10 @@ async function handleCancelReason(
   if (!appointmentId) {
     // Session data got lost somehow — restart cleanly rather than crash.
     await resetSession(from);
-    return sendWhatsAppText(from, `Something went wrong — let's start over.`);
+    if (role === "DOCTOR") {
+      return sendWhatsAppText(from, `Something went wrong — let's start over.`);
+    }
+    return sendWhatsAppButtons(from, `Something went wrong — let's start over.`, [MENU_BUTTON]);
   }
 
   const trimmed = text.trim();
@@ -459,7 +495,10 @@ async function handleCancelReason(
   const reason = trimmed === "" || lower === "skip" ? null : trimmed;
   await cancelAppointment(appointmentId, "CLIENT", reason);
   await resetSession(from);
-  return sendWhatsAppText(from, "Your appointment has been cancelled. Reply \"book\" any time to schedule a new one.");
+  return sendWhatsAppButtons(from, "Your appointment has been cancelled.", [
+    { id: "book", title: "Book again" },
+    MENU_BUTTON,
+  ]);
 }
 
 // ---------------------------------------------------------------------------
@@ -484,10 +523,12 @@ async function handleDoctorMessage(
     return handlePrescriptionInput(from, text, image, data.prescribeAppointmentId);
   }
 
-  // "<number> complete" — e.g. "1 complete" — marks an appointment from the
-  // most recently shown today/week list as done and starts the prescription
-  // capture step. Checked before the plain numeric shortcuts below.
-  const completeMatch = lower.match(/^(\d+)\s*complete$/);
+  // "<number> complete" — e.g. "1 complete" (typed) or "1_complete" (tapped
+  // from the list — row ids can't contain spaces, see sendClientMenu) —
+  // marks an appointment from the most recently shown today/week list as
+  // done and starts the prescription capture step. Checked before the plain
+  // numeric shortcuts below.
+  const completeMatch = lower.match(/^(\d+)[\s_]*complete$/);
   if (completeMatch) {
     return startPrescriptionFlow(from, parseInt(completeMatch[1], 10), data.viewedAppointments ?? []);
   }
@@ -496,8 +537,12 @@ async function handleDoctorMessage(
   if (lower === "2" || lower === "week") return listDoctorAppointments(from, "week");
   if (lower === "3" || lower === "cancel") return startDoctorCancelFlow(from);
 
+  return sendDoctorMenu(from);
+}
+
+async function sendDoctorMenu(to: string) {
   return sendWhatsAppButtons(
-    from,
+    to,
     `Hi ${DOCTOR_NAME}. What would you like to do? (After viewing today/week, tap a patient's row to mark that visit complete and add a prescription.)`,
     [
       { id: "today", title: "Today" },
@@ -535,8 +580,9 @@ async function listDoctorAppointments(from: string, range: "today" | "week") {
     `Appointments ${range === "today" ? "today" : "this week"}:\n\n${list}`
   );
 
-  // Row id is "<n> complete" — tapping a patient goes straight into the
-  // prescription flow for that visit, same as typing "1 complete" would.
+  // Row id is "<n>_complete" (no spaces allowed in an id) — tapping a
+  // patient goes straight into the prescription flow for that visit, same
+  // as typing "1 complete" would.
   return sendWhatsAppList(
     from,
     `Tap a patient once their visit is done to mark it complete and add a prescription.`,
@@ -545,7 +591,7 @@ async function listDoctorAppointments(from: string, range: "today" | "week") {
       {
         title: "Appointments",
         rows: appointments.map((a, i) => ({
-          id: `${i + 1} complete`,
+          id: `${i + 1}_complete`,
           title: a.clientName.slice(0, 24),
           description: formatSlot({ start: a.startTime, end: a.endTime }),
         })),
@@ -556,9 +602,13 @@ async function listDoctorAppointments(from: string, range: "today" | "week") {
 
 async function startPrescriptionFlow(from: string, index: number, viewedAppointments: string[]) {
   if (!Number.isInteger(index) || index < 1 || index > viewedAppointments.length) {
-    return sendWhatsAppText(
+    return sendWhatsAppButtons(
       from,
-      `I don't see item ${index} — reply "today" or "week" first to see the numbered list, then "<number> complete".`
+      `I don't see item ${index} — tap Today or This week to see the list again, then tap a patient (or type "<number> complete").`,
+      [
+        { id: "today", title: "Today" },
+        { id: "week", title: "This week" },
+      ]
     );
   }
 
@@ -625,7 +675,10 @@ async function startDoctorCancelFlow(from: string) {
   });
 
   if (appointments.length === 0) {
-    return sendWhatsAppText(from, "There are no upcoming appointments to cancel.");
+    return sendWhatsAppButtons(from, "There are no upcoming appointments to cancel.", [
+      { id: "today", title: "Today" },
+      { id: "week", title: "This week" },
+    ]);
   }
 
   await setSession(from, "AWAITING_CANCEL_SELECTION", {

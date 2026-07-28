@@ -31,13 +31,23 @@ export async function POST(req: NextRequest) {
   // work after we've parsed the messages out.
   const messages = parseIncomingWebhook(payload);
 
-  await Promise.allSettled(
+  const results = await Promise.allSettled(
     messages
       // Keep it if there's text OR an image (a plain photo with no caption
       // has empty text but still needs to reach the bot).
       .filter((m) => m.text.length > 0 || m.image)
       .map((m) => handleIncomingMessage(m))
   );
+
+  // allSettled swallows errors by design (one bad message shouldn't crash
+  // the whole webhook), but a silently-swallowed failure means the user
+  // just... doesn't get a reply, with no trace anywhere. Log it so failures
+  // show up in Vercel's function logs instead of looking like nothing happened.
+  for (const result of results) {
+    if (result.status === "rejected") {
+      console.error("Failed to handle incoming WhatsApp message", result.reason);
+    }
+  }
 
   return NextResponse.json({ ok: true });
 }
