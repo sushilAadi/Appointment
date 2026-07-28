@@ -680,6 +680,18 @@ async function handleDoctorMessage(
 
   if (lower === "setup") return startDoctorSetup(from, undefined, true);
 
+  // Gate every fresh command (not one already mid another flow, handled
+  // above) behind setup being done — the doctor can't get anything out of
+  // "today"/"week"/"cancel"/etc. that would end up needing a prescription
+  // slip until the registration number + signature are on file, so ask for
+  // them up front instead of only discovering the gap when a visit is
+  // marked complete.
+  const settings = await getDoctorPrescriptionSettings();
+  if (!settings.registrationNumber || !settings.signatureUrl) {
+    await sendWhatsAppText(from, `Your prescription setup isn't done yet — let's finish that first.`);
+    return startDoctorSetup(from, undefined);
+  }
+
   // "<number> complete" — e.g. "1 complete" (typed) or "1_complete" (tapped
   // from the list — row ids can't contain spaces, see sendClientMenu) —
   // marks an appointment from the most recently shown today/week list as
