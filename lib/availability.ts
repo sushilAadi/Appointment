@@ -170,11 +170,38 @@ export async function getAvailableDates(): Promise<
   return [...byDay.values()].sort((a, b) => a.dateIso.localeCompare(b.dateIso));
 }
 
-/** All slots (available + booked) on one specific clinic-local calendar date — used once a patient has picked a day. */
-export async function getSlotsForDate(dateIso: string): Promise<SlotWithAvailability[]> {
+/**
+ * All slots (available + unavailable) on one specific clinic-local calendar
+ * date — used once a patient has picked a day.
+ *
+ * Trimmed to at most `limitAvailable` available slots (default
+ * MAX_SLOTS_SHOWN): WhatsApp's tappable list message hard-caps at 10 rows,
+ * so numbering an 11th available slot in the text summary would show a
+ * number that the tap list silently couldn't include — that mismatch is
+ * exactly what caused an available time to go missing from "Choose a time"
+ * while still appearing, numbered, in the text above it. Cutting the day's
+ * slot list off right after the Nth available one keeps both views in sync
+ * (at the cost of not showing any later-in-the-day "not available" gaps on
+ * an unusually open day — an acceptable trade since Meta's cap can't be raised).
+ */
+export async function getSlotsForDate(
+  dateIso: string,
+  limitAvailable = MAX_SLOTS_SHOWN
+): Promise<SlotWithAvailability[]> {
   const { start, end } = clinicDateRangeFromIso(dateIso);
   const slots = await getSlotsWithAvailability({ limitAvailable: UNCAPPED, limitTotal: UNCAPPED });
-  return slots.filter((s) => s.start >= start && s.start < end);
+  const daySlots = slots.filter((s) => s.start >= start && s.start < end);
+
+  const trimmed: SlotWithAvailability[] = [];
+  let availableCount = 0;
+  for (const slot of daySlots) {
+    trimmed.push(slot);
+    if (slot.available) {
+      availableCount++;
+      if (availableCount >= limitAvailable) break;
+    }
+  }
+  return trimmed;
 }
 
 /**

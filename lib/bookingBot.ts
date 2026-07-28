@@ -1,4 +1,4 @@
-import { listAppointments, listOverlappingAppointments } from "./db/appointments";
+import { listAppointments, listOverlappingAppointments, getAppointmentById } from "./db/appointments";
 import { createDoctorBlock } from "./db/doctorBlocks";
 import {
   sendWhatsAppText,
@@ -86,6 +86,8 @@ async function handleClientMessage(from: string, text: string) {
       return handleClientCancelSelection(from, text, data.cancellableAppointments ?? []);
     case "AWAITING_CANCEL_REASON":
       return handleCancelReason(from, text, data.cancelAppointmentId, "CLIENT");
+    case "AWAITING_PRESCRIPTION_VIEW":
+      return handlePrescriptionViewSelection(from, text, data.viewablePrescriptions ?? []);
     default:
       await resetSession(from);
       return sendClientMenu(from);
@@ -93,15 +95,27 @@ async function handleClientMessage(from: string, text: string) {
 }
 
 async function sendClientMenu(to: string) {
+  // Personalized per patient: no point offering "My Appointments" to
+  // someone who's never booked anything, or "Cancel" when they have nothing
+  // active to cancel (a past-only patient with no upcoming visit still gets
+  // "My Appointments" to see their history, just not "Cancel").
+  const [upcoming, pastCompleted] = await Promise.all([
+    listAppointments({ clientPhone: to, status: "CONFIRMED", startFrom: new Date(), limit: 1 }),
+    listAppointments({ clientPhone: to, status: "COMPLETED", limit: 1 }),
+  ]);
+
+  const hasAnyHistory = upcoming.length > 0 || pastCompleted.length > 0;
+  const hasActiveAppointment = upcoming.length > 0;
+
   // Button/list row ids can't contain spaces — Meta's Graph API silently
   // rejects the whole interactive message if one does (this is why the
   // client menu could go fully silent while the doctor's menu, whose ids
   // have no spaces, kept working). Use underscores instead.
-  await sendWhatsAppButtons(to, `👋 Welcome to ${CLINIC_NAME}. What would you like to do?`, [
-    { id: "book", title: "Book" },
-    { id: "my_appointments", title: "My Appointments" },
-    { id: "cancel", title: "Cancel" },
-  ]);
+  const buttons: { id: string; title: string }[] = [{ id: "book", title: "Book" }];
+  if (hasAnyHistory) buttons.push({ id: "my_appointments", title: "My Appointments" });
+  if (hasActiveAppointment) buttons.push({ id: "cancel", title: "Cancel" });
+
+  await sendWhatsAppButtons(to, `👋 Welcome to ${CLINIC_NAME}. What would you like to do?`, buttons);
 }
 
 async function handleClientIdle(from: string, lower: string) {
@@ -435,33 +449,83 @@ async function listClientAppointments(from: string) {
     lines.push("*Upcoming:*");
     lines.push(...upcoming.map((a) => `📅 ${formatSlot({ start: a.startTime, end: a.endTime })}`));
   }
+
+  // Prescriptions are only ever sent when the patient actually asks for one
+  // (see handlePrescriptionViewSelection) — not dumped automatically every
+  // time "my appointments" is checked. With several past visits, auto-
+  // sending every photo would burn the patient's data on images they didn't
+  // ask for, for no reason.
+  const withPrescription = past.filter((a) => a.prescriptionNotes || a.prescriptionPhotoUrl);
+
   if (past.length > 0) {
     if (lines.length > 0) lines.push("");
     lines.push("*Past visits:*");
     for (const a of past) {
       let line = `✅ ${formatSlot({ start: a.startTime, end: a.endTime })}`;
-      if (a.prescriptionNotes) line += `\nPrescription: ${a.prescriptionNotes}`;
-      else if (a.prescriptionPhotoUrl) line += `\nPrescription: photo (sending below)`;
+      if (a.prescriptionNotes || a.prescriptionPhotoUrl) line += `\n📋 Prescription available`;
       lines.push(line);
     }
   }
 
   await sendWhatsAppText(from, lines.join("\n"));
 
-  // A text message can't embed an image, so re-send any photo
-  // prescriptions as separate image messages right after.
-  for (const a of past) {
-    if (a.prescriptionPhotoUrl) {
-      try {
-        await sendWhatsAppImage(
-          from,
-          a.prescriptionPhotoUrl,
-          `Prescription from ${formatSlot({ start: a.startTime, end: a.endTime })}`
-        );
-      } catch (err) {
-        console.error("Failed to resend prescription photo", err);
-      }
+  if (withPrescription.length === 0) return;
+
+  await setSession(from, "AWAITING_PRESCRIPTION_VIEW", {
+    viewablePrescriptions: withPrescription.map((a) => a.id),
+  });
+
+  return sendWhatsAppList(
+    from,
+    `Which visit's prescription would you like to see?`,
+    "View prescription",
+    [
+      {
+        title: "Past visits",
+        rows: withPrescription.map((a, i) => ({
+          id: String(i + 1),
+          title: formatSlotDate(a.startTime),
+          description: formatSlotTimeRange({ start: a.startTime, end: a.endTime }),
+        })),
+      },
+    ]
+  );
+}
+
+async function handlePrescriptionViewSelection(from: string, text: string, ids: string[]) {
+  const choice = parseInt(text.trim(), 10);
+  if (!Number.isInteger(choice) || choice < 1 || choice > ids.length) {
+    return sendWhatsAppButtons(
+      from,
+      `Please reply with a number between 1 and ${ids.length}, or tap Menu to go back.`,
+      [MENU_BUTTON]
+    );
+  }
+
+  const appointment = await getAppointmentById(ids[choice - 1]);
+  await resetSession(from);
+
+  if (!appointment) {
+    return sendWhatsAppText(from, "Sorry, I couldn't find that visit anymore.");
+  }
+
+  const slotText = formatSlot({ start: appointment.startTime, end: appointment.endTime });
+
+  if (appointment.prescriptionPhotoUrl) {
+    try {
+      await sendWhatsAppImage(
+        from,
+        appointment.prescriptionPhotoUrl,
+        `Prescription from ${slotText}${appointment.prescriptionNotes ? `\n${appointment.prescriptionNotes}` : ""}`
+      );
+    } catch (err) {
+      console.error("Failed to send prescription photo", err);
+      return sendWhatsAppText(from, "Sorry, I couldn't load that photo right now — please try again.");
     }
+  } else if (appointment.prescriptionNotes) {
+    await sendWhatsAppText(from, `Prescription from ${slotText}:\n\n${appointment.prescriptionNotes}`);
+  } else {
+    await sendWhatsAppText(from, "No prescription was recorded for that visit.");
   }
 }
 

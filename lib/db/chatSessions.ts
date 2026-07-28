@@ -10,6 +10,7 @@ export type SessionStep =
   | "AWAITING_CANCEL_SELECTION"
   | "AWAITING_CANCEL_REASON"
   | "AWAITING_PRESCRIPTION"
+  | "AWAITING_PRESCRIPTION_VIEW"
   | "AWAITING_BLOCK_DATE"
   | "AWAITING_BLOCK_RANGE";
 
@@ -23,6 +24,7 @@ export interface SessionData {
   cancelAppointmentId?: string; // appointment chosen to cancel, awaiting a reason
   viewedAppointments?: string[]; // doctor's last-shown today/week list, so "<n> complete" can resolve a number
   prescribeAppointmentId?: string; // appointment being marked complete, awaiting prescription notes/photo
+  viewablePrescriptions?: string[]; // past appointment ids with a prescription, in displayed order, awaiting the patient's pick
   blockOfferedDates?: string[]; // "YYYY-MM-DD" dates shown for the doctor's "block my time" date picker
   blockDate?: string; // "YYYY-MM-DD" date the doctor is blocking, awaiting the time range
   [key: string]: unknown;
