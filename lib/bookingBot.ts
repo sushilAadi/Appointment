@@ -240,7 +240,7 @@ async function handleAwaitingDateSelection(
   await setSession(from, "AWAITING_SLOT_SELECTION", { clientName, offeredSlots });
   await sendWhatsAppText(
     from,
-    `Here are the times on ${formatSlotDate(new Date(daySlots[0].start))} (❌ = already booked):\n${list}`
+    `Here are the times on ${formatSlotDate(new Date(daySlots[0].start))} (❌ = not available):\n${list}`
   );
   return sendSlotPicker(from, offeredSlots);
 }
@@ -406,7 +406,7 @@ async function handleAwaitingConcern(
       await setSession(from, "AWAITING_SLOT_SELECTION", { clientName, offeredSlots });
       await sendWhatsAppText(
         from,
-        `Sorry, that time was just booked by someone else. Here are the current times that day (❌ = already booked):\n${list}`
+        `Sorry, that time was just booked by someone else. Here are the current times that day (❌ = not available):\n${list}`
       );
       return sendSlotPicker(from, offeredSlots);
     }

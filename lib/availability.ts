@@ -22,8 +22,15 @@ export interface Slot {
   end: Date;
 }
 
+// Why a slot is unavailable — only a real patient appointment should ever be
+// labeled "Booked"; a doctor block or a Google Calendar event is the
+// doctor's own unavailability, not something a patient booked, so it gets a
+// "Not available" label instead (see buildSlotListMessage).
+export type BusySource = "appointment" | "block" | "calendar";
+
 export interface SlotWithAvailability extends Slot {
   available: boolean;
+  busySource?: BusySource | null;
 }
 
 function overlaps(aStart: Date, aEnd: Date, bStart: Date, bEnd: Date): boolean {
@@ -65,10 +72,10 @@ export async function getSlotsWithAvailability(
     }),
   ]);
 
-  const busy = [
-    ...dbAppointments.map((a) => ({ start: a.startTime, end: a.endTime })),
-    ...calendarBusy,
-    ...doctorBlocks.map((b) => ({ start: b.startTime, end: b.endTime })),
+  const busy: { start: Date; end: Date; source: BusySource }[] = [
+    ...dbAppointments.map((a) => ({ start: a.startTime, end: a.endTime, source: "appointment" as const })),
+    ...calendarBusy.map((b) => ({ ...b, source: "calendar" as const })),
+    ...doctorBlocks.map((b) => ({ start: b.startTime, end: b.endTime, source: "block" as const })),
   ];
 
   const slots: SlotWithAvailability[] = [];
@@ -112,8 +119,13 @@ export async function getSlotsWithAvailability(
       // Only include slots that are still in the future — this is the
       // check that keeps past-time slots off the list for "today".
       if (slotStart > now) {
-        const conflict = busy.some((b) => overlaps(slotStart, slotEnd, b.start, b.end));
-        slots.push({ start: new Date(slotStart), end: new Date(slotEnd), available: !conflict });
+        const conflict = busy.find((b) => overlaps(slotStart, slotEnd, b.start, b.end));
+        slots.push({
+          start: new Date(slotStart),
+          end: new Date(slotEnd),
+          available: !conflict,
+          busySource: conflict?.source ?? null,
+        });
         if (!conflict) availableCount++;
       }
 
@@ -229,9 +241,12 @@ export function formatSlot(slot: Slot): string {
 
 /**
  * Renders a WhatsApp-friendly slot list grouped by day, numbering only the
- * available slots (patients pick a time by that number) while still
- * showing booked slots inline — bold + a ❌ marker, since WhatsApp text has
- * no color support — instead of hiding them entirely.
+ * available slots (patients pick a time by that number) while still showing
+ * unavailable ones inline — bold + a ❌ marker, since WhatsApp text has no
+ * color support — instead of hiding them entirely. Labeled "Booked" only
+ * when a real patient appointment is the cause; a doctor block or Google
+ * Calendar event is labeled "Not available" instead, since no patient
+ * actually booked that time.
  *
  * Returns the message body plus `offeredSlots` in the same order as the
  * numbers shown, ready to store in session data for the next step.
@@ -257,7 +272,11 @@ export function buildSlotListMessage(slots: SlotWithAvailability[]): {
       offeredSlots.push({ start: slot.start.toISOString(), end: slot.end.toISOString() });
       lines.push(`${counter}. ${formatSlotTimeRange(slot)}`);
     } else {
-      lines.push(`❌ ${formatSlotTimeRange(slot)} — *Booked*`);
+      // Only an actual patient appointment is "Booked" — a doctor block or a
+      // Google Calendar event is the doctor's own unavailability, not
+      // something a patient booked.
+      const label = slot.busySource === "appointment" ? "Booked" : "Not available";
+      lines.push(`❌ ${formatSlotTimeRange(slot)} — *${label}*`);
     }
   }
 
