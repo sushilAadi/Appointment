@@ -3,6 +3,7 @@ import {
   createAppointmentRecord,
   getAppointmentById,
   isSlotTaken,
+  markAppointmentComplete,
   setAppointmentGoogleEventId,
   SlotUnavailableError,
   type Appointment,
@@ -11,7 +12,7 @@ import {
 export { SlotUnavailableError };
 import { createCalendarEvent, deleteCalendarEvent } from "./calendar";
 import { appendAppointmentRow, updateAppointmentStatusInSheet } from "./sheets";
-import { sendWhatsAppText } from "./whatsapp";
+import { sendWhatsAppText, sendWhatsAppImage } from "./whatsapp";
 import { CLINIC_NAME, DOCTOR_NAME, DOCTOR_WHATSAPP_NUMBER } from "./config";
 import { formatSlot } from "./availability";
 
@@ -114,16 +115,19 @@ export async function createAppointment(input: {
 /**
  * Cancels an existing appointment: marks it CANCELLED in the DB, deletes
  * the Calendar event, updates the Sheet row, and notifies whichever side
- * did NOT initiate the cancellation.
+ * did NOT initiate the cancellation. `reason` is optional when the client
+ * cancels and expected (enforced by the bot conversation, not here) when
+ * the doctor cancels.
  */
 export async function cancelAppointment(
   appointmentId: string,
-  cancelledBy: "CLIENT" | "DOCTOR"
+  cancelledBy: "CLIENT" | "DOCTOR",
+  reason?: string | null
 ): Promise<Appointment | null> {
   const existing = await getAppointmentById(appointmentId);
   if (!existing || existing.status === "CANCELLED") return null;
 
-  const updated = await cancelAppointmentRecord(appointmentId, cancelledBy);
+  const updated = await cancelAppointmentRecord(appointmentId, cancelledBy, reason);
   if (!updated) return null;
 
   if (updated.googleEventId) {
@@ -135,7 +139,7 @@ export async function cancelAppointment(
   }
 
   try {
-    await updateAppointmentStatusInSheet(updated.id, "CANCELLED");
+    await updateAppointmentStatusInSheet(updated.id, "CANCELLED", updated.cancellationReason);
   } catch (err) {
     console.error("Failed to update Google Sheet status", err);
   }
@@ -147,7 +151,9 @@ export async function cancelAppointment(
       try {
         await sendWhatsAppText(
           DOCTOR_WHATSAPP_NUMBER,
-          `Appointment cancelled by patient ❌\n\nPatient: ${updated.clientName}\nPhone: +${updated.clientPhone}\n🗓 ${slotText}`
+          `Appointment cancelled by patient ❌\n\nPatient: ${updated.clientName}\nPhone: +${updated.clientPhone}\n🗓 ${slotText}${
+            updated.cancellationReason ? `\nReason: ${updated.cancellationReason}` : ""
+          }`
         );
       } catch (err) {
         console.error("Failed to notify doctor of cancellation", err);
@@ -157,11 +163,65 @@ export async function cancelAppointment(
     try {
       await sendWhatsAppText(
         updated.clientPhone,
-        `Your appointment with ${DOCTOR_NAME} on ${slotText} has been cancelled by the clinic. Reply "book" to pick a new time.`
+        `Your appointment with ${DOCTOR_NAME} on ${slotText} has been cancelled by the clinic.${
+          updated.cancellationReason ? `\nReason: ${updated.cancellationReason}` : ""
+        }\nReply "book" to pick a new time.`
       );
     } catch (err) {
       console.error("Failed to notify client of cancellation", err);
     }
+  }
+
+  return updated;
+}
+
+/**
+ * Marks a visit complete and attaches a prescription (text notes, a photo,
+ * or both — either may be null/omitted). Immediately forwards whatever was
+ * captured to the patient over WhatsApp, and logs the status change in the
+ * Sheet. This is how prescriptions actually reach the patient — the doctor
+ * sends the photo/notes to the bot, not directly to the patient.
+ */
+export async function completeAppointment(
+  appointmentId: string,
+  input: { notes?: string | null; photoUrl?: string | null }
+): Promise<Appointment | null> {
+  const updated = await markAppointmentComplete(appointmentId, {
+    prescriptionNotes: input.notes,
+    prescriptionPhotoUrl: input.photoUrl,
+  });
+  if (!updated) return null;
+
+  try {
+    await updateAppointmentStatusInSheet(updated.id, "COMPLETED");
+  } catch (err) {
+    console.error("Failed to update Google Sheet status", err);
+  }
+
+  const slotText = formatSlot({ start: updated.startTime, end: updated.endTime });
+
+  try {
+    if (updated.prescriptionPhotoUrl) {
+      await sendWhatsAppImage(
+        updated.clientPhone,
+        updated.prescriptionPhotoUrl,
+        `Prescription from your visit on ${slotText} with ${DOCTOR_NAME}.${
+          updated.prescriptionNotes ? `\n${updated.prescriptionNotes}` : ""
+        }`
+      );
+    } else if (updated.prescriptionNotes) {
+      await sendWhatsAppText(
+        updated.clientPhone,
+        `Your visit on ${slotText} is complete. Prescription/notes from ${DOCTOR_NAME}:\n\n${updated.prescriptionNotes}`
+      );
+    } else {
+      await sendWhatsAppText(
+        updated.clientPhone,
+        `Your visit on ${slotText} with ${DOCTOR_NAME} has been marked complete. Thank you!`
+      );
+    }
+  } catch (err) {
+    console.error("Failed to notify client of completed visit", err);
   }
 
   return updated;

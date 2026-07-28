@@ -13,7 +13,13 @@ const dateFmt = new Intl.DateTimeFormat("en-US", {
   timeZone: CLINIC_TIMEZONE,
 });
 
-type FilterValue = "upcoming" | "all" | "cancelled";
+type FilterValue = "upcoming" | "completed" | "cancelled" | "all";
+
+const BADGE_CLASS: Record<string, string> = {
+  CONFIRMED: "badge-confirmed",
+  CANCELLED: "badge-cancelled",
+  COMPLETED: "badge-completed",
+};
 
 export default async function AppointmentsPage({
   searchParams,
@@ -27,8 +33,12 @@ export default async function AppointmentsPage({
       ? { status: "CONFIRMED", startFrom: new Date(), limit: 200 }
       : filter === "cancelled"
       ? { status: "CANCELLED", orderAscending: false, limit: 200 }
+      : filter === "completed"
+      ? { status: "COMPLETED", orderAscending: false, limit: 200 }
       : { limit: 200 }
   );
+
+  const showExtraColumn = filter !== "upcoming";
 
   return (
     <main className="container">
@@ -38,6 +48,9 @@ export default async function AppointmentsPage({
         <div className="filters" style={{ marginBottom: 16 }}>
           <a href="?filter=upcoming" className={filter === "upcoming" ? "active" : ""}>
             Upcoming
+          </a>
+          <a href="?filter=completed" className={filter === "completed" ? "active" : ""}>
+            Completed
           </a>
           <a href="?filter=cancelled" className={filter === "cancelled" ? "active" : ""}>
             Cancelled
@@ -58,6 +71,7 @@ export default async function AppointmentsPage({
                 <th>Date &amp; time</th>
                 <th>Status</th>
                 <th>Booked</th>
+                {showExtraColumn && <th>Cancellation / prescription</th>}
               </tr>
             </thead>
             <tbody>
@@ -67,15 +81,28 @@ export default async function AppointmentsPage({
                   <td>+{a.clientPhone}</td>
                   <td>{dateFmt.format(a.startTime)}</td>
                   <td>
-                    <span
-                      className={`badge ${
-                        a.status === "CONFIRMED" ? "badge-confirmed" : "badge-cancelled"
-                      }`}
-                    >
-                      {a.status}
-                    </span>
+                    <span className={`badge ${BADGE_CLASS[a.status] ?? "badge-cancelled"}`}>{a.status}</span>
                   </td>
                   <td>{dateFmt.format(a.createdAt)}</td>
+                  {showExtraColumn && (
+                    <td>
+                      {a.status === "CANCELLED" &&
+                        `${a.cancellationReason ?? "—"}${a.cancelledBy ? ` (by ${a.cancelledBy.toLowerCase()})` : ""}`}
+                      {a.status === "COMPLETED" && (
+                        <>
+                          {a.prescriptionNotes ?? (a.prescriptionPhotoUrl ? "" : "—")}
+                          {a.prescriptionPhotoUrl && (
+                            <>
+                              {a.prescriptionNotes ? " " : ""}
+                              <a href={a.prescriptionPhotoUrl} target="_blank" rel="noreferrer">
+                                view photo
+                              </a>
+                            </>
+                          )}
+                        </>
+                      )}
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>

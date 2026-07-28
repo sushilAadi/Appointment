@@ -33,8 +33,10 @@ export async function POST(req: NextRequest) {
 
   await Promise.allSettled(
     messages
-      .filter((m) => m.text.length > 0)
-      .map((m) => handleIncomingMessage(m.from, m.text))
+      // Keep it if there's text OR an image (a plain photo with no caption
+      // has empty text but still needs to reach the bot).
+      .filter((m) => m.text.length > 0 || m.image)
+      .map((m) => handleIncomingMessage(m))
   );
 
   return NextResponse.json({ ok: true });

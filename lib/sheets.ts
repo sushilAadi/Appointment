@@ -24,6 +24,7 @@ export const SHEET_HEADERS = [
   "Status",
   "Notes",
   "Created At",
+  "Cancellation Reason",
 ];
 
 /** Creates the tab with a header row if it doesn't already exist. Safe to call repeatedly. */
@@ -45,7 +46,7 @@ export async function ensureSheetHeaders(): Promise<void> {
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: sheetId(),
-    range: `${tabName()}!A1:H1`,
+    range: `${tabName()}!A1:I1`,
     valueInputOption: "RAW",
     requestBody: { values: [SHEET_HEADERS] },
   });
@@ -67,7 +68,7 @@ export async function appendAppointmentRow(appt: SheetAppointmentRow): Promise<v
   const sheets = sheetsClient();
   await sheets.spreadsheets.values.append({
     spreadsheetId: sheetId(),
-    range: `${tabName()}!A:H`,
+    range: `${tabName()}!A:I`,
     valueInputOption: "USER_ENTERED",
     insertDataOption: "INSERT_ROWS",
     requestBody: {
@@ -81,16 +82,21 @@ export async function appendAppointmentRow(appt: SheetAppointmentRow): Promise<v
           appt.status,
           appt.notes ?? "",
           appt.createdAt.toLocaleString(),
+          "", // Cancellation Reason — filled in later if/when cancelled
         ],
       ],
     },
   });
 }
 
-/** Finds the row whose Appointment ID column matches `appointmentId` and updates its Status column. */
+/**
+ * Finds the row whose Appointment ID column matches `appointmentId` and
+ * updates its Status column, plus its Cancellation Reason column if given.
+ */
 export async function updateAppointmentStatusInSheet(
   appointmentId: string,
-  status: string
+  status: string,
+  cancellationReason?: string | null
 ): Promise<void> {
   const sheets = sheetsClient();
   const idColumn = await sheets.spreadsheets.values.get({
@@ -112,4 +118,13 @@ export async function updateAppointmentStatusInSheet(
     valueInputOption: "RAW",
     requestBody: { values: [[status]] },
   });
+
+  if (cancellationReason) {
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: sheetId(),
+      range: `${tabName()}!I${rowNumber}`,
+      valueInputOption: "RAW",
+      requestBody: { values: [[cancellationReason]] },
+    });
+  }
 }

@@ -21,3 +21,16 @@ export function clinicMidnight(daysFromNow = 0): Date {
   );
   return fromClinicLocal(localMidnight);
 }
+
+/**
+ * Start and end (as real UTC instants) of the clinic-local calendar day that
+ * contains `date`. Used to detect "already booked that day" — e.g. a patient
+ * picking a second slot on the same date as an existing confirmed booking.
+ */
+export function clinicDayRange(date: Date): { start: Date; end: Date } {
+  const local = toClinicLocal(date);
+  const localMidnight = new Date(Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate()));
+  const start = fromClinicLocal(localMidnight);
+  const end = fromClinicLocal(new Date(localMidnight.getTime() + 24 * 60 * 60 * 1000));
+  return { start, end };
+}

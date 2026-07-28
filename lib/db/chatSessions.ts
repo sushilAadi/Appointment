@@ -4,14 +4,21 @@ export type SessionStep =
   | "IDLE"
   | "AWAITING_NAME"
   | "AWAITING_SLOT_SELECTION"
+  | "AWAITING_DUPLICATE_CONFIRM"
   | "AWAITING_CONCERN"
-  | "AWAITING_CANCEL_SELECTION";
+  | "AWAITING_CANCEL_SELECTION"
+  | "AWAITING_CANCEL_REASON"
+  | "AWAITING_PRESCRIPTION";
 
 export interface SessionData {
   clientName?: string;
+  suggestedName?: string; // returning patient's name from their last visit, offered as a shortcut
   offeredSlots?: { start: string; end: string }[]; // ISO strings
   selectedSlot?: { start: string; end: string }; // ISO strings, chosen slot awaiting concern + confirmation
   cancellableAppointments?: string[]; // appointment ids, in displayed order
+  cancelAppointmentId?: string; // appointment chosen to cancel, awaiting a reason
+  viewedAppointments?: string[]; // doctor's last-shown today/week list, so "<n> complete" can resolve a number
+  prescribeAppointmentId?: string; // appointment being marked complete, awaiting prescription notes/photo
   [key: string]: unknown;
 }
 

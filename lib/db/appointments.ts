@@ -10,7 +10,7 @@ export class SlotUnavailableError extends Error {
   }
 }
 
-export type AppointmentStatus = "CONFIRMED" | "CANCELLED";
+export type AppointmentStatus = "CONFIRMED" | "CANCELLED" | "COMPLETED";
 
 export interface Appointment {
   id: string;
@@ -22,6 +22,10 @@ export interface Appointment {
   notes: string | null;
   googleEventId: string | null;
   cancelledBy: string | null;
+  cancellationReason: string | null;
+  prescriptionNotes: string | null;
+  prescriptionPhotoUrl: string | null;
+  completedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -38,6 +42,10 @@ interface AppointmentRow {
   notes: string | null;
   google_event_id: string | null;
   cancelled_by: string | null;
+  cancellation_reason: string | null;
+  prescription_notes: string | null;
+  prescription_photo_url: string | null;
+  completed_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -53,6 +61,10 @@ function mapRow(row: AppointmentRow): Appointment {
     notes: row.notes,
     googleEventId: row.google_event_id,
     cancelledBy: row.cancelled_by,
+    cancellationReason: row.cancellation_reason,
+    prescriptionNotes: row.prescription_notes,
+    prescriptionPhotoUrl: row.prescription_photo_url,
+    completedAt: row.completed_at ? new Date(row.completed_at) : null,
     createdAt: new Date(row.created_at),
     updatedAt: new Date(row.updated_at),
   };
@@ -125,16 +137,41 @@ export async function getAppointmentById(id: string): Promise<Appointment | null
 
 export async function cancelAppointmentRecord(
   id: string,
-  cancelledBy: "CLIENT" | "DOCTOR"
+  cancelledBy: "CLIENT" | "DOCTOR",
+  cancellationReason?: string | null
 ): Promise<Appointment | null> {
   const supabase = getSupabaseAdmin();
   const { data, error } = await supabase
     .from("appointments")
-    .update({ status: "CANCELLED", cancelled_by: cancelledBy })
+    .update({
+      status: "CANCELLED",
+      cancelled_by: cancelledBy,
+      cancellation_reason: cancellationReason ?? null,
+    })
     .eq("id", id)
     .select()
     .maybeSingle();
   if (error) throw new Error(`Failed to cancel appointment: ${error.message}`);
+  return data ? mapRow(data as AppointmentRow) : null;
+}
+
+export async function markAppointmentComplete(
+  id: string,
+  input: { prescriptionNotes?: string | null; prescriptionPhotoUrl?: string | null }
+): Promise<Appointment | null> {
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase
+    .from("appointments")
+    .update({
+      status: "COMPLETED",
+      prescription_notes: input.prescriptionNotes ?? null,
+      prescription_photo_url: input.prescriptionPhotoUrl ?? null,
+      completed_at: new Date().toISOString(),
+    })
+    .eq("id", id)
+    .select()
+    .maybeSingle();
+  if (error) throw new Error(`Failed to mark appointment complete: ${error.message}`);
   return data ? mapRow(data as AppointmentRow) : null;
 }
 

@@ -1,16 +1,28 @@
 import { listAppointments } from "./db/appointments";
-import { sendWhatsAppText } from "./whatsapp";
+import {
+  sendWhatsAppText,
+  sendWhatsAppImage,
+  downloadWhatsAppMedia,
+  type IncomingWhatsAppMessage,
+} from "./whatsapp";
+import { uploadPrescriptionPhoto } from "./storage";
 import { getSession, resetSession, setSession } from "./db/chatSessions";
-import { getAvailableSlots, formatSlot } from "./availability";
-import { createAppointment, cancelAppointment, SlotUnavailableError } from "./appointments";
+import { getSlotsWithAvailability, buildSlotListMessage, formatSlot } from "./availability";
+import {
+  createAppointment,
+  cancelAppointment,
+  completeAppointment,
+  SlotUnavailableError,
+} from "./appointments";
 import { CLINIC_NAME, DOCTOR_NAME, isDoctor } from "./config";
-import { clinicMidnight } from "./timezone";
+import { clinicMidnight, clinicDayRange } from "./timezone";
 
 /** Entry point called by the webhook route for every inbound WhatsApp message. */
-export async function handleIncomingMessage(from: string, rawText: string) {
-  const text = rawText.trim();
+export async function handleIncomingMessage(message: IncomingWhatsAppMessage) {
+  const from = message.from;
+  const text = message.text.trim();
   if (isDoctor(from)) {
-    await handleDoctorMessage(from, text);
+    await handleDoctorMessage(from, text, message.image);
   } else {
     await handleClientMessage(from, text);
   }
@@ -38,13 +50,17 @@ async function handleClientMessage(from: string, text: string) {
     case "IDLE":
       return handleClientIdle(from, lower);
     case "AWAITING_NAME":
-      return handleAwaitingName(from, text);
+      return handleAwaitingName(from, text, data.suggestedName);
     case "AWAITING_SLOT_SELECTION":
       return handleAwaitingSlotSelection(from, text, data.offeredSlots ?? []);
+    case "AWAITING_DUPLICATE_CONFIRM":
+      return handleDuplicateBookingConfirm(from, text, data.clientName, data.selectedSlot);
     case "AWAITING_CONCERN":
       return handleAwaitingConcern(from, text, data.clientName, data.selectedSlot);
     case "AWAITING_CANCEL_SELECTION":
       return handleClientCancelSelection(from, text, data.cancellableAppointments ?? []);
+    case "AWAITING_CANCEL_REASON":
+      return handleCancelReason(from, text, data.cancelAppointmentId, "CLIENT");
     default:
       await resetSession(from);
       return sendClientMenu(from);
@@ -54,7 +70,7 @@ async function handleClientMessage(from: string, text: string) {
 async function sendClientMenu(to: string) {
   await sendWhatsAppText(
     to,
-    `👋 Welcome to ${CLINIC_NAME}.\n\nReply:\n1️⃣ "book" — book an appointment with ${DOCTOR_NAME}\n2️⃣ "my appointments" — view your upcoming appointments\n3️⃣ "cancel" — cancel an upcoming appointment`
+    `👋 Welcome to ${CLINIC_NAME}.\n\nReply:\n1️⃣ "book" — book an appointment with ${DOCTOR_NAME}\n2️⃣ "my appointments" — view your upcoming &amp; past appointments\n3️⃣ "cancel" — cancel an upcoming appointment`
   );
 }
 
@@ -76,20 +92,49 @@ async function handleClientIdle(from: string, lower: string) {
   }
 
   if (lower === "1" || lower.includes("book") || lower === "appointment") {
-    await setSession(from, "AWAITING_NAME", {});
-    return sendWhatsAppText(from, "Sure! What's the patient's full name?");
+    return startBookingFlow(from);
   }
 
   return sendClientMenu(from);
 }
 
-async function handleAwaitingName(from: string, text: string) {
-  if (text.length < 2) {
-    return sendWhatsAppText(from, "Please send the patient's full name (at least 2 characters).");
+/**
+ * Recognizes returning patients by phone number (already the unique,
+ * stable identifier every appointment is keyed on) and offers to reuse the
+ * name from their last visit instead of asking again every time.
+ */
+async function startBookingFlow(from: string) {
+  const priorVisits = await listAppointments({ clientPhone: from, orderAscending: false, limit: 1 });
+  const priorName = priorVisits[0]?.clientName;
+
+  if (priorName) {
+    await setSession(from, "AWAITING_NAME", { suggestedName: priorName });
+    return sendWhatsAppText(
+      from,
+      `Welcome back to ${CLINIC_NAME}! Your last visit was booked for "${priorName}".\n\nReply "yes" to book again for ${priorName}, or type a different patient's name.`
+    );
   }
 
-  const slots = await getAvailableSlots();
-  if (slots.length === 0) {
+  await setSession(from, "AWAITING_NAME", {});
+  return sendWhatsAppText(from, "Sure! What's the patient's full name?");
+}
+
+async function handleAwaitingName(from: string, text: string, suggestedName?: string) {
+  const trimmed = text.trim();
+  let clientName: string;
+
+  if (suggestedName && trimmed.toLowerCase() === "yes") {
+    clientName = suggestedName;
+  } else if (trimmed.length < 2) {
+    return sendWhatsAppText(from, "Please send the patient's full name (at least 2 characters).");
+  } else {
+    clientName = trimmed;
+  }
+
+  const slots = await getSlotsWithAvailability();
+  const { message: list, offeredSlots } = buildSlotListMessage(slots);
+
+  if (offeredSlots.length === 0) {
     await resetSession(from);
     return sendWhatsAppText(
       from,
@@ -97,18 +142,14 @@ async function handleAwaitingName(from: string, text: string) {
     );
   }
 
-  const list = slots
-    .map((s, i) => `${i + 1}. ${formatSlot(s)}`)
-    .join("\n");
-
   await setSession(from, "AWAITING_SLOT_SELECTION", {
-    clientName: text,
-    offeredSlots: slots.map((s) => ({ start: s.start.toISOString(), end: s.end.toISOString() })),
+    clientName,
+    offeredSlots,
   });
 
   return sendWhatsAppText(
     from,
-    `Thanks! Here are the next available times with ${DOCTOR_NAME}:\n\n${list}\n\nReply with the number of the time that works best.`
+    `Thanks! Here are the times with ${DOCTOR_NAME} (❌ = already booked):\n${list}\n\nReply with the number of the time that works best.`
   );
 }
 
@@ -129,6 +170,31 @@ async function handleAwaitingSlotSelection(
   const clientName = data.clientName ?? "Patient";
   const slot = offeredSlots[choice - 1];
 
+  // Same-day duplicate check: if this patient already has another confirmed
+  // appointment on the calendar day of the slot they just picked, confirm
+  // before proceeding rather than silently allowing a second booking.
+  const { start: dayStart, end: dayEnd } = clinicDayRange(new Date(slot.start));
+  const sameDayBookings = await listAppointments({
+    clientPhone: from,
+    status: "CONFIRMED",
+    startFrom: dayStart,
+    startBefore: dayEnd,
+  });
+
+  if (sameDayBookings.length > 0) {
+    const times = sameDayBookings
+      .map((a) => formatSlot({ start: a.startTime, end: a.endTime }))
+      .join(", ");
+    await setSession(from, "AWAITING_DUPLICATE_CONFIRM", {
+      clientName,
+      selectedSlot: slot,
+    });
+    return sendWhatsAppText(
+      from,
+      `Heads up — you already have an appointment booked that day at ${times}. Do you want to book another one? Reply "yes" to continue, or "no" to cancel.`
+    );
+  }
+
   await setSession(from, "AWAITING_CONCERN", {
     clientName,
     selectedSlot: slot,
@@ -138,6 +204,46 @@ async function handleAwaitingSlotSelection(
     from,
     `Got it. Any specific concern or reason for the visit? (optional — reply "skip" to leave it blank)`
   );
+}
+
+/**
+ * Handles the yes/no confirmation shown when a patient tries to book a
+ * second appointment on a day they already have one. "yes" resumes the
+ * normal flow (on to the concern step); "no" or "menu" abandons the booking.
+ */
+async function handleDuplicateBookingConfirm(
+  from: string,
+  text: string,
+  clientName: string | undefined,
+  selectedSlot: { start: string; end: string } | undefined
+) {
+  if (!selectedSlot) {
+    // Session data got lost somehow — restart cleanly rather than crash.
+    await resetSession(from);
+    return sendWhatsAppText(from, `Something went wrong — let's start over. Reply "book" to try again.`);
+  }
+
+  const lower = text.trim().toLowerCase();
+
+  if (lower === "menu") {
+    await resetSession(from);
+    return sendClientMenu(from);
+  }
+
+  if (lower === "yes" || lower === "y") {
+    await setSession(from, "AWAITING_CONCERN", { clientName, selectedSlot });
+    return sendWhatsAppText(
+      from,
+      `Got it. Any specific concern or reason for the visit? (optional — reply "skip" to leave it blank)`
+    );
+  }
+
+  if (lower === "no" || lower === "n") {
+    await resetSession(from);
+    return sendWhatsAppText(from, `No problem — that booking wasn't made. Reply "menu" any time to start over.`);
+  }
+
+  return sendWhatsAppText(from, `Please reply "yes" to book another appointment that day, or "no" to cancel.`);
 }
 
 async function handleAwaitingConcern(
@@ -167,8 +273,10 @@ async function handleAwaitingConcern(
     if (err instanceof SlotUnavailableError) {
       // Someone else grabbed this exact slot between it being listed and
       // confirmed here — show a fresh list instead of failing silently.
-      const freshSlots = await getAvailableSlots();
-      if (freshSlots.length === 0) {
+      const freshSlots = await getSlotsWithAvailability();
+      const { message: list, offeredSlots } = buildSlotListMessage(freshSlots);
+
+      if (offeredSlots.length === 0) {
         await resetSession(from);
         return sendWhatsAppText(
           from,
@@ -176,14 +284,10 @@ async function handleAwaitingConcern(
         );
       }
 
-      const list = freshSlots.map((s, i) => `${i + 1}. ${formatSlot(s)}`).join("\n");
-      await setSession(from, "AWAITING_SLOT_SELECTION", {
-        clientName,
-        offeredSlots: freshSlots.map((s) => ({ start: s.start.toISOString(), end: s.end.toISOString() })),
-      });
+      await setSession(from, "AWAITING_SLOT_SELECTION", { clientName, offeredSlots });
       return sendWhatsAppText(
         from,
-        `Sorry, that time was just booked by someone else. Here are the current available times:\n\n${list}\n\nReply with the number of the time that works best.`
+        `Sorry, that time was just booked by someone else. Here are the current times (❌ = already booked):\n${list}\n\nReply with the number of the time that works best.`
       );
     }
     throw err;
@@ -194,21 +298,48 @@ async function handleAwaitingConcern(
 }
 
 async function listClientAppointments(from: string) {
-  const appointments = await listAppointments({
-    clientPhone: from,
-    status: "CONFIRMED",
-    startFrom: new Date(),
-  });
+  const [upcoming, past] = await Promise.all([
+    listAppointments({ clientPhone: from, status: "CONFIRMED", startFrom: new Date() }),
+    listAppointments({ clientPhone: from, status: "COMPLETED", orderAscending: false, limit: 5 }),
+  ]);
 
-  if (appointments.length === 0) {
-    return sendWhatsAppText(from, "You have no upcoming appointments. Reply \"book\" to schedule one.");
+  if (upcoming.length === 0 && past.length === 0) {
+    return sendWhatsAppText(from, "You have no appointments yet. Reply \"book\" to schedule one.");
   }
 
-  const list = appointments
-    .map((a) => `• ${formatSlot({ start: a.startTime, end: a.endTime })}`)
-    .join("\n");
+  const lines: string[] = [];
+  if (upcoming.length > 0) {
+    lines.push("*Upcoming:*");
+    lines.push(...upcoming.map((a) => `📅 ${formatSlot({ start: a.startTime, end: a.endTime })}`));
+  }
+  if (past.length > 0) {
+    if (lines.length > 0) lines.push("");
+    lines.push("*Past visits:*");
+    for (const a of past) {
+      let line = `✅ ${formatSlot({ start: a.startTime, end: a.endTime })}`;
+      if (a.prescriptionNotes) line += `\nPrescription: ${a.prescriptionNotes}`;
+      else if (a.prescriptionPhotoUrl) line += `\nPrescription: photo (sending below)`;
+      lines.push(line);
+    }
+  }
 
-  return sendWhatsAppText(from, `Your upcoming appointments:\n\n${list}`);
+  await sendWhatsAppText(from, lines.join("\n"));
+
+  // A text message can't embed an image, so re-send any photo
+  // prescriptions as separate image messages right after.
+  for (const a of past) {
+    if (a.prescriptionPhotoUrl) {
+      try {
+        await sendWhatsAppImage(
+          from,
+          a.prescriptionPhotoUrl,
+          `Prescription from ${formatSlot({ start: a.startTime, end: a.endTime })}`
+        );
+      } catch (err) {
+        console.error("Failed to resend prescription photo", err);
+      }
+    }
+  }
 }
 
 async function startCancelFlow(from: string) {
@@ -248,7 +379,47 @@ async function handleClientCancelSelection(from: string, text: string, ids: stri
     return sendWhatsAppText(from, `Please reply with a number between 1 and ${ids.length}.`);
   }
 
-  await cancelAppointment(ids[choice - 1], "CLIENT");
+  await setSession(from, "AWAITING_CANCEL_REASON", { cancelAppointmentId: ids[choice - 1] });
+  return sendWhatsAppText(
+    from,
+    `Got it. Any reason for cancelling? (optional — reply "skip" to leave it blank)`
+  );
+}
+
+/**
+ * Shared by both the client and doctor cancel flows. The only difference
+ * is whether a reason is required: optional for the client, mandatory for
+ * the doctor (re-prompts until one is given).
+ */
+async function handleCancelReason(
+  from: string,
+  text: string,
+  appointmentId: string | undefined,
+  role: "CLIENT" | "DOCTOR"
+) {
+  if (!appointmentId) {
+    // Session data got lost somehow — restart cleanly rather than crash.
+    await resetSession(from);
+    return sendWhatsAppText(from, `Something went wrong — let's start over.`);
+  }
+
+  const trimmed = text.trim();
+  const lower = trimmed.toLowerCase();
+
+  if (role === "DOCTOR") {
+    if (trimmed === "" || lower === "skip") {
+      return sendWhatsAppText(
+        from,
+        `A reason is required to cancel this appointment — please describe why (e.g. "doctor unavailable", "patient rescheduling").`
+      );
+    }
+    await cancelAppointment(appointmentId, "DOCTOR", trimmed);
+    await resetSession(from);
+    return sendWhatsAppText(from, "Appointment cancelled and the patient has been notified.");
+  }
+
+  const reason = trimmed === "" || lower === "skip" ? null : trimmed;
+  await cancelAppointment(appointmentId, "CLIENT", reason);
   await resetSession(from);
   return sendWhatsAppText(from, "Your appointment has been cancelled. Reply \"book\" any time to schedule a new one.");
 }
@@ -257,12 +428,30 @@ async function handleClientCancelSelection(from: string, text: string, ids: stri
 // Doctor side
 // ---------------------------------------------------------------------------
 
-async function handleDoctorMessage(from: string, text: string) {
+async function handleDoctorMessage(
+  from: string,
+  text: string,
+  image?: { mediaId: string; mimeType: string }
+) {
   const { step, data } = await getSession(from);
   const lower = text.toLowerCase();
 
   if (step === "AWAITING_CANCEL_SELECTION") {
     return handleDoctorCancelSelection(from, text, data.cancellableAppointments ?? []);
+  }
+  if (step === "AWAITING_CANCEL_REASON") {
+    return handleCancelReason(from, text, data.cancelAppointmentId, "DOCTOR");
+  }
+  if (step === "AWAITING_PRESCRIPTION") {
+    return handlePrescriptionInput(from, text, image, data.prescribeAppointmentId);
+  }
+
+  // "<number> complete" — e.g. "1 complete" — marks an appointment from the
+  // most recently shown today/week list as done and starts the prescription
+  // capture step. Checked before the plain numeric shortcuts below.
+  const completeMatch = lower.match(/^(\d+)\s*complete$/);
+  if (completeMatch) {
+    return startPrescriptionFlow(from, parseInt(completeMatch[1], 10), data.viewedAppointments ?? []);
   }
 
   if (lower === "1" || lower === "today") return listDoctorAppointments(from, "today");
@@ -271,7 +460,7 @@ async function handleDoctorMessage(from: string, text: string) {
 
   return sendWhatsAppText(
     from,
-    `Hi ${DOCTOR_NAME}. Reply:\n1️⃣ "today" — today's appointments\n2️⃣ "week" — this week's appointments\n3️⃣ "cancel" — cancel an appointment`
+    `Hi ${DOCTOR_NAME}. Reply:\n1️⃣ "today" — today's appointments\n2️⃣ "week" — this week's appointments\n3️⃣ "cancel" — cancel an appointment\n\nAfter viewing today/week, reply "<number> complete" (e.g. "1 complete") to mark a visit done and add a prescription.`
   );
 }
 
@@ -286,14 +475,84 @@ async function listDoctorAppointments(from: string, range: "today" | "week") {
   });
 
   if (appointments.length === 0) {
+    await setSession(from, "IDLE", { viewedAppointments: [] });
     return sendWhatsAppText(from, `No appointments ${range === "today" ? "today" : "this week"}.`);
   }
 
   const list = appointments
-    .map((a) => `• ${formatSlot({ start: a.startTime, end: a.endTime })} — ${a.clientName} (+${a.clientPhone})`)
+    .map((a, i) => `${i + 1}. ${formatSlot({ start: a.startTime, end: a.endTime })} — ${a.clientName} (+${a.clientPhone})`)
     .join("\n");
 
-  return sendWhatsAppText(from, `Appointments ${range === "today" ? "today" : "this week"}:\n\n${list}`);
+  // Remembered so "<number> complete" can resolve which appointment a
+  // number refers to.
+  await setSession(from, "IDLE", { viewedAppointments: appointments.map((a) => a.id) });
+
+  return sendWhatsAppText(
+    from,
+    `Appointments ${range === "today" ? "today" : "this week"}:\n\n${list}\n\nReply "<number> complete" to mark a visit done and add a prescription.`
+  );
+}
+
+async function startPrescriptionFlow(from: string, index: number, viewedAppointments: string[]) {
+  if (!Number.isInteger(index) || index < 1 || index > viewedAppointments.length) {
+    return sendWhatsAppText(
+      from,
+      `I don't see item ${index} — reply "today" or "week" first to see the numbered list, then "<number> complete".`
+    );
+  }
+
+  await setSession(from, "AWAITING_PRESCRIPTION", {
+    prescribeAppointmentId: viewedAppointments[index - 1],
+  });
+
+  return sendWhatsAppText(
+    from,
+    `Marking that visit complete. Type the prescription/notes, send a photo of it (caption optional), or reply "skip" to finish with no prescription attached.`
+  );
+}
+
+async function handlePrescriptionInput(
+  from: string,
+  text: string,
+  image: { mediaId: string; mimeType: string } | undefined,
+  appointmentId: string | undefined
+) {
+  if (!appointmentId) {
+    // Session data got lost somehow — restart cleanly rather than crash.
+    await resetSession(from);
+    return sendWhatsAppText(from, `Something went wrong — let's start over.`);
+  }
+
+  const trimmed = text.trim();
+  const lower = trimmed.toLowerCase();
+
+  if (!image && (lower === "skip" || trimmed === "")) {
+    await completeAppointment(appointmentId, { notes: null, photoUrl: null });
+    await resetSession(from);
+    return sendWhatsAppText(from, "Marked complete with no prescription attached.");
+  }
+
+  let photoUrl: string | null = null;
+  if (image) {
+    try {
+      const { buffer, mimeType } = await downloadWhatsAppMedia(image.mediaId);
+      photoUrl = await uploadPrescriptionPhoto(buffer, mimeType);
+    } catch (err) {
+      console.error("Failed to process prescription photo", err);
+      return sendWhatsAppText(
+        from,
+        "Sorry, I couldn't process that photo — please try sending it again, or type the prescription as text instead."
+      );
+    }
+  }
+
+  // For an image, `trimmed` is the caption (may be empty); for text-only
+  // it's the typed notes.
+  const notes = trimmed || null;
+
+  await completeAppointment(appointmentId, { notes, photoUrl });
+  await resetSession(from);
+  return sendWhatsAppText(from, "Saved and sent to the patient.");
 }
 
 async function startDoctorCancelFlow(from: string) {
@@ -324,7 +583,9 @@ async function handleDoctorCancelSelection(from: string, text: string, ids: stri
     return sendWhatsAppText(from, `Please reply with a number between 1 and ${ids.length}.`);
   }
 
-  await cancelAppointment(ids[choice - 1], "DOCTOR");
-  await resetSession(from);
-  return sendWhatsAppText(from, "Appointment cancelled and the patient has been notified.");
+  await setSession(from, "AWAITING_CANCEL_REASON", { cancelAppointmentId: ids[choice - 1] });
+  return sendWhatsAppText(
+    from,
+    `Please provide a reason for cancelling this appointment (required — the patient will see this):`
+  );
 }

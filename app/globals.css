@@ -64,6 +64,11 @@ th {
   color: #c0392b;
 }
 
+.badge-completed {
+  background: #e8eaf6;
+  color: #3949ab;
+}
+
 .filters a {
   margin-right: 12px;
   text-decoration: none;

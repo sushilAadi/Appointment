@@ -28,6 +28,12 @@ export const SLOT_MINUTES = 30;
 export const BOOKING_WINDOW_DAYS = 7;
 export const MAX_SLOTS_SHOWN = 10;
 
+// Cap on how many slots (available + already-booked combined) get listed
+// in one WhatsApp message when showing booked slots inline. Keeps a fully
+// booked week from producing a huge message while still showing enough
+// context around the available times.
+export const MAX_TOTAL_SLOTS_SHOWN = 40;
+
 export const DOCTOR_NAME = process.env.DOCTOR_NAME || "the doctor";
 export const CLINIC_NAME = process.env.CLINIC_NAME || "the clinic";
 
