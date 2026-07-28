@@ -175,6 +175,30 @@ export async function markAppointmentComplete(
   return data ? mapRow(data as AppointmentRow) : null;
 }
 
+/**
+ * True-overlap lookup (start < end AND end > start), same predicate as
+ * isSlotTaken but returning full rows — used when the doctor blocks off a
+ * time range that may not line up with the 30-minute slot grid (e.g. a
+ * custom "2:15pm-5pm" block), where a plain startTime >= X filter could miss
+ * an appointment that started slightly earlier but still overlaps.
+ */
+export async function listOverlappingAppointments(
+  start: Date,
+  end: Date,
+  status: AppointmentStatus = "CONFIRMED"
+): Promise<Appointment[]> {
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase
+    .from("appointments")
+    .select()
+    .eq("status", status)
+    .lt("start_time", end.toISOString())
+    .gt("end_time", start.toISOString())
+    .order("start_time", { ascending: true });
+  if (error) throw new Error(`Failed to list overlapping appointments: ${error.message}`);
+  return (data as AppointmentRow[]).map(mapRow);
+}
+
 export interface AppointmentQuery {
   status?: AppointmentStatus;
   clientPhone?: string;

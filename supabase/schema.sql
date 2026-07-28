@@ -48,6 +48,20 @@ create unique index if not exists appointments_unique_confirmed_start
   on appointments (start_time)
   where status = 'CONFIRMED';
 
+-- Doctor-defined "I'm unavailable during this window" blocks (e.g. blocking
+-- off the afternoon, or a custom time range) — checked by the availability
+-- engine alongside CONFIRMED appointments and Google Calendar busy time.
+create table if not exists doctor_blocks (
+  id         uuid primary key default gen_random_uuid(),
+  start_time timestamptz not null,
+  end_time   timestamptz not null,
+  reason     text,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists doctor_blocks_start_time_idx on doctor_blocks (start_time);
+create index if not exists doctor_blocks_end_time_idx on doctor_blocks (end_time);
+
 -- Per-phone-number WhatsApp conversation state for the booking bot.
 create table if not exists chat_sessions (
   id         uuid primary key default gen_random_uuid(),
@@ -85,6 +99,7 @@ create trigger chat_sessions_set_updated_at
 -- unreachable from the browser even if a key were ever leaked client-side.
 alter table appointments enable row level security;
 alter table chat_sessions enable row level security;
+alter table doctor_blocks enable row level security;
 
 -- ---------------------------------------------------------------------------
 -- Storage bucket for prescription photos

@@ -3,22 +3,28 @@ import { getSupabaseAdmin } from "../supabaseAdmin";
 export type SessionStep =
   | "IDLE"
   | "AWAITING_NAME"
+  | "AWAITING_DATE_SELECTION"
   | "AWAITING_SLOT_SELECTION"
   | "AWAITING_DUPLICATE_CONFIRM"
   | "AWAITING_CONCERN"
   | "AWAITING_CANCEL_SELECTION"
   | "AWAITING_CANCEL_REASON"
-  | "AWAITING_PRESCRIPTION";
+  | "AWAITING_PRESCRIPTION"
+  | "AWAITING_BLOCK_DATE"
+  | "AWAITING_BLOCK_RANGE";
 
 export interface SessionData {
   clientName?: string;
   suggestedName?: string; // returning patient's name from their last visit, offered as a shortcut
+  offeredDates?: string[]; // "YYYY-MM-DD" clinic-local dates, in displayed order, for the date-picker step
   offeredSlots?: { start: string; end: string }[]; // ISO strings
   selectedSlot?: { start: string; end: string }; // ISO strings, chosen slot awaiting concern + confirmation
   cancellableAppointments?: string[]; // appointment ids, in displayed order
   cancelAppointmentId?: string; // appointment chosen to cancel, awaiting a reason
   viewedAppointments?: string[]; // doctor's last-shown today/week list, so "<n> complete" can resolve a number
   prescribeAppointmentId?: string; // appointment being marked complete, awaiting prescription notes/photo
+  blockOfferedDates?: string[]; // "YYYY-MM-DD" dates shown for the doctor's "block my time" date picker
+  blockDate?: string; // "YYYY-MM-DD" date the doctor is blocking, awaiting the time range
   [key: string]: unknown;
 }
 

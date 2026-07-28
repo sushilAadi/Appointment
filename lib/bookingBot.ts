@@ -1,4 +1,5 @@
-import { listAppointments } from "./db/appointments";
+import { listAppointments, listOverlappingAppointments } from "./db/appointments";
+import { createDoctorBlock } from "./db/doctorBlocks";
 import {
   sendWhatsAppText,
   sendWhatsAppImage,
@@ -10,10 +11,15 @@ import {
 import { uploadPrescriptionPhoto } from "./storage";
 import { getSession, resetSession, setSession } from "./db/chatSessions";
 import {
-  getSlotsWithAvailability,
+  getAvailableDates,
+  getSlotsForDate,
+  getUpcomingWorkingDays,
+  workingHoursForDate,
+  midDayForDate,
   buildSlotListMessage,
   buildSlotListRows,
   formatSlot,
+  formatSlotDate,
   formatSlotTimeRange,
 } from "./availability";
 import {
@@ -23,7 +29,7 @@ import {
   SlotUnavailableError,
 } from "./appointments";
 import { CLINIC_NAME, DOCTOR_NAME, isDoctor } from "./config";
-import { clinicMidnight, clinicDayRange } from "./timezone";
+import { clinicMidnight, clinicDayRange, isoDateInClinicTz, clinicLocalTimeFromIso } from "./timezone";
 
 /** Entry point called by the webhook route for every inbound WhatsApp message. */
 export async function handleIncomingMessage(message: IncomingWhatsAppMessage) {
@@ -68,6 +74,8 @@ async function handleClientMessage(from: string, text: string) {
       return handleClientIdle(from, lower);
     case "AWAITING_NAME":
       return handleAwaitingName(from, text, data.suggestedName);
+    case "AWAITING_DATE_SELECTION":
+      return handleAwaitingDateSelection(from, text, data.clientName, data.offeredDates ?? []);
     case "AWAITING_SLOT_SELECTION":
       return handleAwaitingSlotSelection(from, text, data.offeredSlots ?? []);
     case "AWAITING_DUPLICATE_CONFIRM":
@@ -160,26 +168,79 @@ async function handleAwaitingName(from: string, text: string, suggestedName?: st
     clientName = trimmed;
   }
 
-  const slots = await getSlotsWithAvailability();
-  const { message: list, offeredSlots } = buildSlotListMessage(slots);
+  return sendDateStep(from, clientName);
+}
 
-  if (offeredSlots.length === 0) {
-    await resetSession(from);
+/**
+ * Step 1 of booking: shows the upcoming days that still have openings, each
+ * with an open-slot count, as a tappable list. Picking a date moves on to
+ * step 2 (times for that day only) via handleAwaitingDateSelection.
+ */
+async function sendDateStep(to: string, clientName: string) {
+  const dates = await getAvailableDates();
+
+  if (dates.length === 0) {
+    await resetSession(to);
     return sendWhatsAppButtons(
-      from,
+      to,
       `Sorry, ${DOCTOR_NAME} has no open slots in the next week. Please try again later.`,
       [MENU_BUTTON]
     );
   }
 
-  await setSession(from, "AWAITING_SLOT_SELECTION", {
+  await setSession(to, "AWAITING_DATE_SELECTION", {
     clientName,
-    offeredSlots,
+    offeredDates: dates.map((d) => d.dateIso),
   });
 
+  return sendWhatsAppList(
+    to,
+    `Thanks! Which day works best with ${DOCTOR_NAME}?`,
+    "Choose a date",
+    [
+      {
+        title: "Available dates",
+        rows: dates.map((d, i) => ({
+          id: String(i + 1),
+          title: d.label,
+          description: `${d.availableCount} slot${d.availableCount === 1 ? "" : "s"} available`,
+        })),
+      },
+    ]
+  );
+}
+
+/** Step 2 of booking: times for the one date chosen in sendDateStep. */
+async function handleAwaitingDateSelection(
+  from: string,
+  text: string,
+  clientName: string | undefined,
+  offeredDates: string[]
+) {
+  const choice = parseInt(text.trim(), 10);
+  if (!Number.isInteger(choice) || choice < 1 || choice > offeredDates.length) {
+    return sendWhatsAppButtons(
+      from,
+      `Please reply with a number between 1 and ${offeredDates.length}, or tap Menu to start over.`,
+      [MENU_BUTTON]
+    );
+  }
+
+  const dateIso = offeredDates[choice - 1];
+  const daySlots = await getSlotsForDate(dateIso);
+  const { message: list, offeredSlots } = buildSlotListMessage(daySlots);
+
+  if (offeredSlots.length === 0) {
+    // Someone else booked the last opening on this day since the date list
+    // was shown — re-fetch and show whichever days still have openings.
+    await sendWhatsAppText(from, `Sorry, that day just filled up.`);
+    return sendDateStep(from, clientName ?? "Patient");
+  }
+
+  await setSession(from, "AWAITING_SLOT_SELECTION", { clientName, offeredSlots });
   await sendWhatsAppText(
     from,
-    `Thanks! Here are the times with ${DOCTOR_NAME} (❌ = already booked):\n${list}`
+    `Here are the times on ${formatSlotDate(new Date(daySlots[0].start))} (❌ = already booked):\n${list}`
   );
   return sendSlotPicker(from, offeredSlots);
 }
@@ -328,23 +389,24 @@ async function handleAwaitingConcern(
   } catch (err) {
     if (err instanceof SlotUnavailableError) {
       // Someone else grabbed this exact slot between it being listed and
-      // confirmed here — show a fresh list instead of failing silently.
-      const freshSlots = await getSlotsWithAvailability();
-      const { message: list, offeredSlots } = buildSlotListMessage(freshSlots);
+      // confirmed here — show a fresh list for that same day instead of
+      // failing silently.
+      const dateIso = isoDateInClinicTz(new Date(selectedSlot.start));
+      const daySlots = await getSlotsForDate(dateIso);
+      const { message: list, offeredSlots } = buildSlotListMessage(daySlots);
 
       if (offeredSlots.length === 0) {
-        await resetSession(from);
-        return sendWhatsAppButtons(
+        await sendWhatsAppText(
           from,
-          `Sorry, that time was just booked by someone else, and there are no other open slots right now. Please try again later.`,
-          [MENU_BUTTON]
+          `Sorry, that time was just booked by someone else, and there are no other openings left that day.`
         );
+        return sendDateStep(from, clientName ?? "Patient");
       }
 
       await setSession(from, "AWAITING_SLOT_SELECTION", { clientName, offeredSlots });
       await sendWhatsAppText(
         from,
-        `Sorry, that time was just booked by someone else. Here are the current times (❌ = already booked):\n${list}`
+        `Sorry, that time was just booked by someone else. Here are the current times that day (❌ = already booked):\n${list}`
       );
       return sendSlotPicker(from, offeredSlots);
     }
@@ -522,6 +584,12 @@ async function handleDoctorMessage(
   if (step === "AWAITING_PRESCRIPTION") {
     return handlePrescriptionInput(from, text, image, data.prescribeAppointmentId);
   }
+  if (step === "AWAITING_BLOCK_DATE") {
+    return handleBlockDateSelection(from, text, data.blockOfferedDates ?? []);
+  }
+  if (step === "AWAITING_BLOCK_RANGE") {
+    return handleBlockRangeInput(from, text, data.blockDate);
+  }
 
   // "<number> complete" — e.g. "1 complete" (typed) or "1_complete" (tapped
   // from the list — row ids can't contain spaces, see sendClientMenu) —
@@ -536,18 +604,25 @@ async function handleDoctorMessage(
   if (lower === "1" || lower === "today") return listDoctorAppointments(from, "today");
   if (lower === "2" || lower === "week") return listDoctorAppointments(from, "week");
   if (lower === "3" || lower === "cancel") return startDoctorCancelFlow(from);
+  if (lower === "4" || lower === "block") return startBlockFlow(from);
 
   return sendDoctorMenu(from);
 }
 
 async function sendDoctorMenu(to: string) {
-  return sendWhatsAppButtons(
+  return sendWhatsAppList(
     to,
     `Hi ${DOCTOR_NAME}. What would you like to do? (After viewing today/week, tap a patient's row to mark that visit complete and add a prescription.)`,
+    "Choose an option",
     [
-      { id: "today", title: "Today" },
-      { id: "week", title: "This week" },
-      { id: "cancel", title: "Cancel appt" },
+      {
+        rows: [
+          { id: "today", title: "Today" },
+          { id: "week", title: "This week" },
+          { id: "cancel", title: "Cancel appointment" },
+          { id: "block", title: "Block my time" },
+        ],
+      },
     ]
   );
 }
@@ -712,5 +787,200 @@ async function handleDoctorCancelSelection(from: string, text: string, ids: stri
   return sendWhatsAppText(
     from,
     `Please provide a reason for cancelling this appointment (required — the patient will see this):`
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Doctor: "Block my time" — configurable unavailability that the
+// availability engine respects, with automatic cancel + notify for any
+// confirmed appointment that falls inside the blocked window.
+// ---------------------------------------------------------------------------
+
+async function startBlockFlow(from: string) {
+  const days = getUpcomingWorkingDays();
+  if (days.length === 0) {
+    return sendWhatsAppText(from, "No upcoming working days to block.");
+  }
+
+  await setSession(from, "AWAITING_BLOCK_DATE", { blockOfferedDates: days.map((d) => d.dateIso) });
+
+  return sendWhatsAppList(
+    from,
+    `Which date would you like to block off? Tap one, or type its number.`,
+    "Choose a date",
+    [{ title: "Upcoming days", rows: days.map((d, i) => ({ id: String(i + 1), title: d.label })) }]
+  );
+}
+
+async function handleBlockDateSelection(from: string, text: string, offeredDates: string[]) {
+  const lower = text.trim().toLowerCase();
+  if (lower === "menu" || lower === "cancel") {
+    await resetSession(from);
+    return sendDoctorMenu(from);
+  }
+
+  const choice = parseInt(text.trim(), 10);
+  if (!Number.isInteger(choice) || choice < 1 || choice > offeredDates.length) {
+    return sendWhatsAppText(
+      from,
+      `Please reply with a number between 1 and ${offeredDates.length}, or "menu" to cancel.`
+    );
+  }
+
+  const dateIso = offeredDates[choice - 1];
+  await setSession(from, "AWAITING_BLOCK_RANGE", { blockDate: dateIso });
+
+  const dateLabel = formatSlotDate(workingHoursForDate(dateIso).start);
+  return sendWhatsAppButtons(
+    from,
+    `Blocking time on ${dateLabel}. Choose a preset, or type a custom range like "2pm-5pm" or "14:00-17:00".`,
+    [
+      { id: "whole_day", title: "Whole day" },
+      { id: "morning", title: "Morning" },
+      { id: "afternoon", title: "Afternoon" },
+    ]
+  );
+}
+
+// Parses a typed time range like "2pm-5pm", "2:30pm-4pm", or "14:00-17:00"
+// into 24-hour hour/minute pairs. If only the second time has am/pm, it's
+// applied to the first too (e.g. "2-5pm" means 2pm-5pm, not 2am-5pm).
+const TIME_RANGE_RE =
+  /^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*-\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/i;
+
+function to24Hour(hour: number, ampm?: string): number | null {
+  if (ampm) {
+    if (hour < 1 || hour > 12) return null;
+    if (ampm === "am") return hour === 12 ? 0 : hour;
+    return hour === 12 ? 12 : hour + 12;
+  }
+  // No am/pm given — accept as already being in 24-hour form.
+  return hour >= 0 && hour <= 23 ? hour : null;
+}
+
+function parseTimeRange(
+  text: string
+): { startHour: number; startMinute: number; endHour: number; endMinute: number } | null {
+  const m = text.trim().match(TIME_RANGE_RE);
+  if (!m) return null;
+  const [, h1, min1, ap1, h2, min2, ap2] = m;
+
+  const ap2Lower = ap2?.toLowerCase();
+  const ap1Lower = ap1?.toLowerCase() || ap2Lower;
+
+  const startHour = to24Hour(parseInt(h1, 10), ap1Lower);
+  const endHour = to24Hour(parseInt(h2, 10), ap2Lower);
+  if (startHour === null || endHour === null) return null;
+
+  return {
+    startHour,
+    startMinute: min1 ? parseInt(min1, 10) : 0,
+    endHour,
+    endMinute: min2 ? parseInt(min2, 10) : 0,
+  };
+}
+
+async function handleBlockRangeInput(from: string, text: string, blockDateIso: string | undefined) {
+  if (!blockDateIso) {
+    await resetSession(from);
+    return sendWhatsAppText(from, `Something went wrong — let's start over.`);
+  }
+
+  const lower = text.trim().toLowerCase();
+  if (lower === "menu" || lower === "cancel") {
+    await resetSession(from);
+    return sendDoctorMenu(from);
+  }
+
+  let start: Date;
+  let end: Date;
+  let rangeLabel: string;
+
+  if (lower === "whole_day") {
+    ({ start, end } = workingHoursForDate(blockDateIso));
+    rangeLabel = "the whole day";
+  } else if (lower === "morning") {
+    start = workingHoursForDate(blockDateIso).start;
+    end = midDayForDate(blockDateIso);
+    rangeLabel = "the morning";
+  } else if (lower === "afternoon") {
+    start = midDayForDate(blockDateIso);
+    end = workingHoursForDate(blockDateIso).end;
+    rangeLabel = "the afternoon";
+  } else {
+    const parsed = parseTimeRange(text);
+    if (!parsed) {
+      return sendWhatsAppText(
+        from,
+        `Sorry, I couldn't read that time range. Try a preset, or a format like "2pm-5pm" or "14:00-17:00".`
+      );
+    }
+    start = clinicLocalTimeFromIso(blockDateIso, parsed.startHour, parsed.startMinute);
+    end = clinicLocalTimeFromIso(blockDateIso, parsed.endHour, parsed.endMinute);
+    if (end <= start) {
+      return sendWhatsAppText(
+        from,
+        `That end time is before (or the same as) the start time — please try again, e.g. "2pm-5pm".`
+      );
+    }
+    rangeLabel = formatSlotTimeRange({ start, end });
+  }
+
+  // If blocking "today", don't reach back before the current moment — that
+  // would retroactively flag an appointment that already happened earlier
+  // today as cancelled-for-unavailability.
+  const now = new Date();
+  if (start < now) start = now;
+  if (end <= start) {
+    return sendWhatsAppText(from, `That time has already passed today — nothing left to block.`);
+  }
+
+  await createDoctorBlock({ start, end, reason: "Doctor unavailable" });
+
+  // True overlap, not just "starts within the block" — a confirmed 1:45pm
+  // appointment still needs to be caught by a 2pm-5pm block, since it runs
+  // into that window even though it started before it.
+  const affected = await listOverlappingAppointments(start, end);
+
+  for (const appt of affected) {
+    await cancelAppointment(appt.id, "DOCTOR", "Doctor unavailable during this time");
+
+    // Proactively help the patient rebook instead of just leaving them with
+    // a cancellation notice — show whichever other dates still have openings.
+    try {
+      const altDates = await getAvailableDates();
+      if (altDates.length > 0) {
+        await sendWhatsAppList(
+          appt.clientPhone,
+          "Here are other days with openings if you'd like to rebook.",
+          "Choose a date",
+          [
+            {
+              title: "Available dates",
+              rows: altDates.map((d, i) => ({
+                id: String(i + 1),
+                title: d.label,
+                description: `${d.availableCount} slot${d.availableCount === 1 ? "" : "s"} available`,
+              })),
+            },
+          ]
+        );
+      }
+    } catch (err) {
+      console.error("Failed to send rebooking suggestions after doctor block", err);
+    }
+  }
+
+  await resetSession(from);
+  const dateLabel = formatSlotDate(start);
+  return sendWhatsAppText(
+    from,
+    `Blocked ${dateLabel} — ${rangeLabel}.${
+      affected.length > 0
+        ? ` Cancelled ${affected.length} appointment${affected.length === 1 ? "" : "s"} and notified the patient${
+            affected.length === 1 ? "" : "s"
+          }.`
+        : " No existing appointments were affected."
+    }`
   );
 }

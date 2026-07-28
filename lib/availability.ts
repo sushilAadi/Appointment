@@ -1,4 +1,5 @@
 import { listAppointments } from "./db/appointments";
+import { listDoctorBlocks } from "./db/doctorBlocks";
 import { getBusyIntervals } from "./calendar";
 import {
   BOOKING_WINDOW_DAYS,
@@ -8,7 +9,13 @@ import {
   SLOT_MINUTES,
   WORKING_HOURS,
 } from "./config";
-import { toClinicLocal, fromClinicLocal } from "./timezone";
+import {
+  toClinicLocal,
+  fromClinicLocal,
+  isoDateInClinicTz,
+  clinicDateRangeFromIso,
+  clinicLocalTimeFromIso,
+} from "./timezone";
 
 export interface Slot {
   start: Date;
@@ -26,22 +33,25 @@ function overlaps(aStart: Date, aEnd: Date, bStart: Date, bEnd: Date): boolean {
 /**
  * Builds the full working-hours grid over the next BOOKING_WINDOW_DAYS,
  * marking each slot available/unavailable based on CONFIRMED appointments
- * in the database and busy blocks on the Google Calendar (covers events
- * created outside the bot, e.g. the doctor blocking time off manually).
+ * in the database, doctor-defined "block my time" windows, and busy blocks
+ * on the Google Calendar (covers events created outside the bot, e.g. the
+ * doctor blocking time off manually in Calendar instead of via WhatsApp).
  *
  * Keeps generating days until either `limitAvailable` available slots have
- * been collected, or `MAX_TOTAL_SLOTS_SHOWN` total slots (available +
- * booked) have been generated — the second cap exists so a fully-booked
- * week doesn't produce a huge WhatsApp message.
+ * been collected, or `limitTotal` total slots (available + booked) have
+ * been generated — the second cap exists so a fully-booked week doesn't
+ * produce a huge WhatsApp message. Callers that need the true full picture
+ * (e.g. the per-day availability summary) can pass very high caps.
  */
 export async function getSlotsWithAvailability(
-  limitAvailable = MAX_SLOTS_SHOWN
+  options: { limitAvailable?: number; limitTotal?: number } = {}
 ): Promise<SlotWithAvailability[]> {
+  const { limitAvailable = MAX_SLOTS_SHOWN, limitTotal = MAX_TOTAL_SLOTS_SHOWN } = options;
   const now = new Date();
   const windowEnd = new Date(now);
   windowEnd.setDate(windowEnd.getDate() + BOOKING_WINDOW_DAYS);
 
-  const [dbAppointments, calendarBusy] = await Promise.all([
+  const [dbAppointments, calendarBusy, doctorBlocks] = await Promise.all([
     listAppointments({ status: "CONFIRMED", startFrom: now, startBefore: windowEnd }),
     getBusyIntervals(now, windowEnd).catch((err) => {
       // Don't let a Calendar API hiccup block booking entirely — fall back
@@ -49,11 +59,16 @@ export async function getSlotsWithAvailability(
       console.error("getBusyIntervals failed, continuing without it", err);
       return [] as { start: Date; end: Date }[];
     }),
+    listDoctorBlocks({ startFrom: now, startBefore: windowEnd }).catch((err) => {
+      console.error("listDoctorBlocks failed, continuing without it", err);
+      return [] as { startTime: Date; endTime: Date }[];
+    }),
   ]);
 
   const busy = [
     ...dbAppointments.map((a) => ({ start: a.startTime, end: a.endTime })),
     ...calendarBusy,
+    ...doctorBlocks.map((b) => ({ start: b.startTime, end: b.endTime })),
   ];
 
   const slots: SlotWithAvailability[] = [];
@@ -63,7 +78,7 @@ export async function getSlotsWithAvailability(
 
   for (
     let day = 0;
-    day < BOOKING_WINDOW_DAYS && availableCount < limitAvailable && slots.length < MAX_TOTAL_SLOTS_SHOWN;
+    day < BOOKING_WINDOW_DAYS && availableCount < limitAvailable && slots.length < limitTotal;
     day++
   ) {
     // Midnight of this day, expressed as clinic-local wall-clock fields
@@ -89,7 +104,7 @@ export async function getSlotsWithAvailability(
     while (
       slotStart < dayEnd &&
       availableCount < limitAvailable &&
-      slots.length < MAX_TOTAL_SLOTS_SHOWN
+      slots.length < limitTotal
     ) {
       const slotEnd = new Date(slotStart.getTime() + SLOT_MINUTES * 60_000);
       if (slotEnd > dayEnd) break;
@@ -111,8 +126,83 @@ export async function getSlotsWithAvailability(
 
 /** Available slots only — used wherever booked slots don't need to be shown. */
 export async function getAvailableSlots(limit = MAX_SLOTS_SHOWN): Promise<Slot[]> {
-  const all = await getSlotsWithAvailability(limit);
+  const all = await getSlotsWithAvailability({ limitAvailable: limit });
   return all.filter((s) => s.available).map(({ start, end }) => ({ start, end }));
+}
+
+// A cap high enough that it never actually kicks in within a
+// BOOKING_WINDOW_DAYS-sized window (max real slot count is roughly
+// BOOKING_WINDOW_DAYS * slots-per-day, always far below this) — used when a
+// caller needs the true, uncapped picture instead of a WhatsApp-message-sized one.
+const UNCAPPED = Number.MAX_SAFE_INTEGER;
+
+/**
+ * One entry per upcoming day that still has at least one open slot, with a
+ * count — this is what powers the "pick a date" step of booking. Only days
+ * with real openings are included, so patients never tap into a fully-booked day.
+ */
+export async function getAvailableDates(): Promise<
+  { dateIso: string; label: string; availableCount: number }[]
+> {
+  const slots = await getSlotsWithAvailability({ limitAvailable: UNCAPPED, limitTotal: UNCAPPED });
+  const byDay = new Map<string, { dateIso: string; label: string; availableCount: number }>();
+
+  for (const slot of slots) {
+    if (!slot.available) continue;
+    const dateIso = isoDateInClinicTz(slot.start);
+    const entry = byDay.get(dateIso) ?? { dateIso, label: formatSlotDate(slot.start), availableCount: 0 };
+    entry.availableCount++;
+    byDay.set(dateIso, entry);
+  }
+
+  return [...byDay.values()].sort((a, b) => a.dateIso.localeCompare(b.dateIso));
+}
+
+/** All slots (available + booked) on one specific clinic-local calendar date — used once a patient has picked a day. */
+export async function getSlotsForDate(dateIso: string): Promise<SlotWithAvailability[]> {
+  const { start, end } = clinicDateRangeFromIso(dateIso);
+  const slots = await getSlotsWithAvailability({ limitAvailable: UNCAPPED, limitTotal: UNCAPPED });
+  return slots.filter((s) => s.start >= start && s.start < end);
+}
+
+/**
+ * Upcoming working days within the booking window, regardless of current
+ * bookings — used by the doctor's "block my time" date picker, since a day
+ * that's already fully booked (or fully open) is equally valid to block.
+ * Purely calendar/working-hours math, no DB or Calendar calls.
+ */
+export function getUpcomingWorkingDays(): { dateIso: string; label: string }[] {
+  const clinicNow = toClinicLocal(new Date());
+  const days: { dateIso: string; label: string }[] = [];
+
+  for (let day = 0; day < BOOKING_WINDOW_DAYS; day++) {
+    const localMidnight = new Date(
+      Date.UTC(clinicNow.getUTCFullYear(), clinicNow.getUTCMonth(), clinicNow.getUTCDate() + day)
+    );
+    if (WORKING_HOURS.closedDays.includes(localMidnight.getUTCDay())) continue;
+
+    const dayStart = fromClinicLocal(localMidnight);
+    days.push({ dateIso: isoDateInClinicTz(dayStart), label: formatSlotDate(dayStart) });
+  }
+
+  return days;
+}
+
+/** Working-hours start/end (as real UTC instants) for a given clinic-local calendar date. */
+export function workingHoursForDate(dateIso: string): { start: Date; end: Date } {
+  return {
+    start: clinicLocalTimeFromIso(dateIso, WORKING_HOURS.startHour, 0),
+    end: clinicLocalTimeFromIso(dateIso, WORKING_HOURS.endHour, 0),
+  };
+}
+
+/** The midpoint of the working day (as a real UTC instant) for a given clinic-local calendar date — splits "morning" from "afternoon". */
+export function midDayForDate(dateIso: string): Date {
+  const totalMinutes = (WORKING_HOURS.endHour - WORKING_HOURS.startHour) * 60;
+  const midMinutesFromStart = Math.floor(totalMinutes / 2);
+  const midHour = WORKING_HOURS.startHour + Math.floor(midMinutesFromStart / 60);
+  const midMinute = midMinutesFromStart % 60;
+  return clinicLocalTimeFromIso(dateIso, midHour, midMinute);
 }
 
 export function formatSlotDate(date: Date): string {

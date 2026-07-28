@@ -34,3 +34,37 @@ export function clinicDayRange(date: Date): { start: Date; end: Date } {
   const end = fromClinicLocal(new Date(localMidnight.getTime() + 24 * 60 * 60 * 1000));
   return { start, end };
 }
+
+/**
+ * The clinic-local calendar date of `date`, as a "YYYY-MM-DD" key — used as
+ * a stable, no-spaces id for date pickers (WhatsApp list/button ids can't
+ * contain spaces) and as a lookup key grouping slots by day.
+ */
+export function isoDateInClinicTz(date: Date): string {
+  const local = toClinicLocal(date);
+  const y = local.getUTCFullYear();
+  const m = String(local.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(local.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+/** Midnight (as a real UTC instant) of a "YYYY-MM-DD" clinic-local calendar date. */
+export function clinicLocalMidnightFromIso(dateIso: string): Date {
+  const [y, m, d] = dateIso.split("-").map(Number);
+  const localMidnight = new Date(Date.UTC(y, m - 1, d));
+  return fromClinicLocal(localMidnight);
+}
+
+/** Start and end (as real UTC instants) of the clinic-local calendar day identified by `dateIso`. */
+export function clinicDateRangeFromIso(dateIso: string): { start: Date; end: Date } {
+  const start = clinicLocalMidnightFromIso(dateIso);
+  const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+  return { start, end };
+}
+
+/** A specific wall-clock time (hour/minute, clinic-local) on the calendar date `dateIso`, as a real UTC instant. */
+export function clinicLocalTimeFromIso(dateIso: string, hour: number, minute = 0): Date {
+  const [y, m, d] = dateIso.split("-").map(Number);
+  const local = new Date(Date.UTC(y, m - 1, d, hour, minute, 0, 0));
+  return fromClinicLocal(local);
+}
