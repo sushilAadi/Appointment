@@ -831,13 +831,23 @@ async function handleBlockDateSelection(from: string, text: string, offeredDates
   await setSession(from, "AWAITING_BLOCK_RANGE", { blockDate: dateIso });
 
   const dateLabel = formatSlotDate(workingHoursForDate(dateIso).start);
-  return sendWhatsAppButtons(
+  // A list (not buttons — buttons cap out at 3) so "Particular time" is an
+  // actual tappable option, not just something buried in the body text that
+  // only works if you happen to type over the buttons.
+  return sendWhatsAppList(
     from,
-    `Blocking time on ${dateLabel}. Choose a preset, or type a custom range like "2pm-5pm" or "14:00-17:00".`,
+    `Blocking time on ${dateLabel}. Choose an option.`,
+    "Choose a range",
     [
-      { id: "whole_day", title: "Whole day" },
-      { id: "morning", title: "Morning" },
-      { id: "afternoon", title: "Afternoon" },
+      {
+        title: "Block off",
+        rows: [
+          { id: "whole_day", title: "Whole day" },
+          { id: "morning", title: "Morning" },
+          { id: "afternoon", title: "Afternoon" },
+          { id: "custom", title: "Particular time" },
+        ],
+      },
     ]
   );
 }
@@ -890,6 +900,16 @@ async function handleBlockRangeInput(from: string, text: string, blockDateIso: s
   if (lower === "menu" || lower === "cancel") {
     await resetSession(from);
     return sendDoctorMenu(from);
+  }
+
+  // Tapped "Particular time" — just re-prompt for the actual range as text;
+  // stays on this same step, so the next message falls into the custom-range
+  // parser below.
+  if (lower === "custom") {
+    return sendWhatsAppText(
+      from,
+      `What time range? Type it like "2pm-5pm" or "14:00-17:00".`
+    );
   }
 
   let start: Date;
