@@ -5,7 +5,7 @@
 // filters/expands and renders what it's given, so CLINIC_TIMEZONE/env logic
 // never needs to ship to the browser.
 import { Fragment, useMemo, useState } from "react";
-import { Search, ChevronRight, CheckCircle2, XCircle, Clock } from "lucide-react";
+import { Search, ChevronRight, CheckCircle2, XCircle, Clock, Calendar, X } from "lucide-react";
 import { initialsFor } from "@/lib/format";
 import PrescriptionTrigger from "./PrescriptionTrigger";
 
@@ -74,11 +74,22 @@ function matchesQuery(patient: PatientViewModel, query: string): boolean {
   return patient.visits.some((v) => v.dateIso.includes(q) || v.dateLabel.toLowerCase().includes(q));
 }
 
+// dateFilter comes straight from a native <input type="date">, so it's
+// already "YYYY-MM-DD" — the exact same format as VisitViewModel.dateIso.
+function matchesDate(patient: PatientViewModel, dateFilter: string): boolean {
+  if (!dateFilter) return true;
+  return patient.visits.some((v) => v.dateIso === dateFilter);
+}
+
 export default function PatientDirectory({ patients }: { patients: PatientViewModel[] }) {
   const [query, setQuery] = useState("");
+  const [dateFilter, setDateFilter] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
-  const filtered = useMemo(() => patients.filter((p) => matchesQuery(p, query)), [patients, query]);
+  const filtered = useMemo(
+    () => patients.filter((p) => matchesQuery(p, query) && matchesDate(p, dateFilter)),
+    [patients, query, dateFilter]
+  );
 
   function toggle(phone: string) {
     setExpanded((prev) => {
@@ -91,19 +102,44 @@ export default function PatientDirectory({ patients }: { patients: PatientViewMo
 
   return (
     <>
-      <div className="patients-search">
-        <Search size={15} />
-        <input
-          type="text"
-          placeholder="Search by name, phone, or visit date (e.g. Jul 29)"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          aria-label="Search patients"
-        />
+      <div className="patients-filters">
+        <div className="patients-search">
+          <Search size={15} />
+          <input
+            type="text"
+            placeholder="Search by name or phone"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            aria-label="Search patients"
+          />
+        </div>
+
+        <div className="patients-date-filter">
+          <Calendar size={15} />
+          <input
+            type="date"
+            value={dateFilter}
+            onChange={(e) => setDateFilter(e.target.value)}
+            aria-label="Filter by visit date"
+          />
+          {dateFilter && (
+            <button
+              type="button"
+              className="patients-date-clear"
+              onClick={() => setDateFilter("")}
+              aria-label="Clear date filter"
+            >
+              <X size={13} />
+            </button>
+          )}
+        </div>
       </div>
 
       {filtered.length === 0 ? (
-        <p className="empty-state">No patients match &quot;{query}&quot;.</p>
+        <p className="empty-state">
+          No patients match{query ? ` "${query}"` : ""}
+          {dateFilter ? ` on ${dateFilter}` : ""}.
+        </p>
       ) : (
         <div className="ptbl-wrap">
           <table className="ptbl">

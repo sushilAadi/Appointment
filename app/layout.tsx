@@ -1,4 +1,5 @@
 import "./globals.css";
+import "./tailwind.css";
 import type { ReactNode } from "react";
 import localFont from "next/font/local";
 import { CLINIC_NAME } from "@/lib/config";
@@ -64,7 +65,13 @@ const THEME_INIT_SCRIPT = `
 (function () {
   try {
     var t = window.localStorage.getItem("dashboard-theme");
-    if (t === "dark") document.documentElement.setAttribute("data-theme", "dark");
+    if (t === "dark") {
+      document.documentElement.setAttribute("data-theme", "dark");
+      // Tailwind's dark: variant and the evilcharts chart components key off
+      // a real ".dark" class rather than this app's own data-theme
+      // attribute, so both are kept in sync (see ThemeToggle.tsx too).
+      document.documentElement.classList.add("dark");
+    }
   } catch (e) {}
 })();
 `;
@@ -75,7 +82,14 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       <head>
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
       </head>
-      <body>
+      {/* suppressHydrationWarning here only ignores mismatches on this one
+          element's attributes — it's what browser extensions like
+          ColorZilla (adds cz-shortcut-listen) or Grammarly inject into
+          <body> before React hydrates. Nothing in this app sets that
+          attribute; it's not a real bug, and this is the standard Next.js
+          fix so those extensions don't spam the console for every user
+          who has one installed. */}
+      <body suppressHydrationWarning>
         <GrainientBackground />
         {children}
       </body>

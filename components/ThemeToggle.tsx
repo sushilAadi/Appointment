@@ -17,6 +17,11 @@ export default function ThemeToggle() {
     const initial = stored === "dark" ? "dark" : "light";
     setTheme(initial);
     document.documentElement.setAttribute("data-theme", initial);
+    // Tailwind's dark: variant and the evilcharts chart components
+    // (components/evilcharts/**) key off a ".dark" class rather than this
+    // app's own data-theme attribute — kept in sync here (and in the
+    // pre-hydration script in app/layout.tsx) so both systems agree.
+    document.documentElement.classList.toggle("dark", initial === "dark");
     setMounted(true);
   }, []);
 
@@ -24,6 +29,7 @@ export default function ThemeToggle() {
     const next = theme === "dark" ? "light" : "dark";
     setTheme(next);
     document.documentElement.setAttribute("data-theme", next);
+    document.documentElement.classList.toggle("dark", next === "dark");
     window.localStorage.setItem(STORAGE_KEY, next);
   }
 

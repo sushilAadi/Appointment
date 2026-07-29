@@ -3,12 +3,12 @@
 import { usePathname } from "next/navigation";
 import { Calendar, ClipboardList, Users } from "lucide-react";
 
-// "Appointments" is the dashboard home page, served at "/" (see
-// app/(dashboard)/page.tsx), not "/appointments".
+// "Dashboard" is the home page, served at "/" (see app/(dashboard)/page.tsx).
+// "Appointment" is the booking/calendar page, served at "/schedule".
 const RAIL_ITEMS = [
-  { href: "/", label: "Appointments", icon: ClipboardList },
+  { href: "/", label: "Dashboard", icon: ClipboardList },
   { href: "/patients", label: "Patients", icon: Users },
-  { href: "/schedule", label: "Schedule", icon: Calendar },
+  { href: "/schedule", label: "Appointment", icon: Calendar },
 ];
 
 export default function Sidebar() {
@@ -19,7 +19,7 @@ export default function Sidebar() {
       {RAIL_ITEMS.map((item) => {
         const Icon = item.icon;
         // "/" needs an exact match — startsWith("/") would match every
-        // route and leave the Appointments icon permanently "active".
+        // route and leave the Dashboard icon permanently "active".
         const active = item.href === "/" ? pathname === "/" : pathname?.startsWith(item.href);
         return (
           <a

@@ -1,0 +1,106 @@
+/* ---------------------------------------------------------------------------
+   Tailwind CSS, scoped in on purpose.
+
+   This app's own design system (app/globals.css) is a hand-written, plain-CSS
+   token system used by every existing page. Tailwind is added ONLY so the
+   evilcharts/echarts chart components (components/evilcharts/**,
+   components/charts/PatientStatusRadial.tsx) can use their expected utility
+   classes (bg-background, text-muted-foreground, border-border, etc.).
+
+   Two things are deliberately different from a default Tailwind/shadcn setup:
+
+   1. Preflight (Tailwind's base element reset) is NOT imported. This app
+      already resets/styles raw elements (body, button, table, ...) itself in
+      globals.css — Preflight would silently override those rules everywhere,
+      not just inside the chart components. Only the theme + utilities layers
+      are loaded, so Tailwind classes work wherever they're actually used, and
+      nothing changes for elements that don't use them.
+
+   2. Every theme variable is namespaced "--sc-*" (shadcn-scoped) instead of
+      the usual --background/--border/--muted/etc. globals.css already
+      defines --border, --muted, and --accent for its own, different, use —
+      reusing those exact names here would silently override them (or be
+      overridden by them) app-wide, since :root custom properties don't
+      namespace by file. The @theme block below maps Tailwind's expected
+      utility names to these --sc-* variables, so the two token systems can
+      never collide.
+--------------------------------------------------------------------------- */
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+
+/* Tailwind's dark: variant follows this app's existing manual toggle (a
+   .dark class kept in sync with the data-theme="dark" attribute set by
+   ThemeToggle/the inline pre-hydration script) instead of the OS
+   prefers-color-scheme default. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme inline {
+  --color-background: var(--sc-background);
+  --color-foreground: var(--sc-foreground);
+  --color-card: var(--sc-card);
+  --color-card-foreground: var(--sc-card-foreground);
+  --color-popover: var(--sc-popover);
+  --color-popover-foreground: var(--sc-popover-foreground);
+  --color-primary: var(--sc-primary);
+  --color-primary-foreground: var(--sc-primary-foreground);
+  --color-secondary: var(--sc-secondary);
+  --color-secondary-foreground: var(--sc-secondary-foreground);
+  --color-muted: var(--sc-muted);
+  --color-muted-foreground: var(--sc-muted-foreground);
+  --color-accent: var(--sc-accent);
+  --color-accent-foreground: var(--sc-accent-foreground);
+  --color-destructive: var(--sc-destructive);
+  --color-destructive-foreground: var(--sc-destructive-foreground);
+  --color-border: var(--sc-border);
+  --color-input: var(--sc-input);
+  --color-ring: var(--sc-ring);
+  --radius-sm: calc(var(--sc-radius) - 4px);
+  --radius-md: calc(var(--sc-radius) - 2px);
+  --radius-lg: var(--sc-radius);
+  --radius-xl: calc(var(--sc-radius) + 4px);
+}
+
+:root {
+  --sc-background: #ffffff;
+  --sc-foreground: #0a0a0a;
+  --sc-card: #ffffff;
+  --sc-card-foreground: #0a0a0a;
+  --sc-popover: #ffffff;
+  --sc-popover-foreground: #0a0a0a;
+  --sc-primary: #171717;
+  --sc-primary-foreground: #fafafa;
+  --sc-secondary: #f5f5f5;
+  --sc-secondary-foreground: #171717;
+  --sc-muted: #f5f5f5;
+  --sc-muted-foreground: #737373;
+  --sc-accent: #f5f5f5;
+  --sc-accent-foreground: #171717;
+  --sc-destructive: #e7000b;
+  --sc-destructive-foreground: #fafafa;
+  --sc-border: #e5e5e5;
+  --sc-input: #e5e5e5;
+  --sc-ring: #a1a1a1;
+  --sc-radius: 0.625rem;
+}
+
+.dark {
+  --sc-background: #0a0a0a;
+  --sc-foreground: #fafafa;
+  --sc-card: #171717;
+  --sc-card-foreground: #fafafa;
+  --sc-popover: #171717;
+  --sc-popover-foreground: #fafafa;
+  --sc-primary: #e5e5e5;
+  --sc-primary-foreground: #171717;
+  --sc-secondary: #262626;
+  --sc-secondary-foreground: #fafafa;
+  --sc-muted: #262626;
+  --sc-muted-foreground: #a1a1a1;
+  --sc-accent: #262626;
+  --sc-accent-foreground: #fafafa;
+  --sc-destructive: #ff6467;
+  --sc-destructive-foreground: #fafafa;
+  --sc-border: rgba(255, 255, 255, 0.1);
+  --sc-input: rgba(255, 255, 255, 0.15);
+  --sc-ring: #737373;
+}

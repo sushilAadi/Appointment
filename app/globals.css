@@ -42,6 +42,13 @@
   --heat-2: #8fd4a4;
   --heat-3: #4fae74;
   --heat-4: var(--success-text);
+  /* Dedicated palette for the "Patient status" donut — deliberately
+     distinct from the --success/--info/--danger badge colors used
+     everywhere else, so the chart reads as its own visual moment rather
+     than repeating the same green/blue/red the table already uses. */
+  --donut-confirmed: #14b8a6;
+  --donut-completed: #6366f1;
+  --donut-cancelled: #f59e0b;
 }
 
 html[data-theme="dark"] {
@@ -76,6 +83,9 @@ html[data-theme="dark"] {
   --heat-2: #2f5c3f;
   --heat-3: #4f9468;
   --heat-4: var(--success-text);
+  --donut-confirmed: #5eead4;
+  --donut-completed: #a5b4fc;
+  --donut-cancelled: #fbbf24;
 }
 
 * {
@@ -290,6 +300,17 @@ a {
   align-items: center;
   gap: 10px;
   flex-shrink: 0;
+}
+
+/* The uploaded logo image bakes its own wordmark in, so it's rendered at a
+   fixed height (matching the old 34px icon mark's height) with width auto —
+   .top-nav-brand has no overflow:hidden, so it's free to spill past the
+   64px sidebar-aligned column into the transparent top-nav bar, same as the
+   old icon+text pairing did. */
+.logo-image {
+  height: 36px;
+  width: auto;
+  object-fit:cover;
 }
 
 .logo-mark {
@@ -760,6 +781,14 @@ tbody tr:last-child td {
   font-size: 13px;
 }
 
+.patients-filters {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+
 .patients-search {
   display: flex;
   align-items: center;
@@ -769,7 +798,8 @@ tbody tr:last-child td {
   border-radius: var(--radius-md);
   background: var(--card-bg-soft);
   color: var(--muted);
-  margin-bottom: 18px;
+  flex: 1;
+  min-width: 200px;
 }
 
 .patients-search input {
@@ -784,6 +814,51 @@ tbody tr:last-child td {
 
 .patients-search input::placeholder {
   color: var(--muted);
+}
+
+.patients-date-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--card-bg-soft);
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.patients-date-filter input[type="date"] {
+  border: none;
+  background: none;
+  outline: none;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  /* Native date-input chrome (the field itself, not just the calendar
+     picker icon) is fixed-width per browser and can't be shrunk further
+     without clipping the digits — this is close to the minimum that keeps
+     "mm/dd/yyyy" fully visible. */
+  width: 122px;
+}
+
+.patients-date-clear {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: var(--card-bg);
+  border-radius: var(--radius-full);
+  width: 18px;
+  height: 18px;
+  color: var(--muted);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.patients-date-clear:hover {
+  background: var(--danger-bg);
+  color: var(--danger-text);
 }
 
 .patient-visit-list {
@@ -1058,9 +1133,25 @@ tbody tr:last-child td {
   gap: 20px;
 }
 
+/* max-height alone (with overflow hidden) was clipping the chart bodies —
+   the panel-header + chart content naturally wanted a hair more than the
+   260px assumed for the chart host, and overflow:hidden chopped off
+   whatever didn't fit instead of reflowing it. Making the panel itself a
+   flex column fixes this properly: the header (flex-shrink:0 below) keeps
+   its natural size, and the chart host (flex:1 min-height:0, see
+   .donut-card-body/.iso-chart-host) gets exactly whatever's left inside
+   the 350px cap — nothing is ever forced past its real size. */
 .dash-two-col > .panel {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  max-height: 350px;
+  overflow: hidden;
+}
+
+.dash-two-col > .panel > .panel-header {
+  flex-shrink: 0;
 }
 
 /* .panel + .panel normally adds a 20px stacked-page margin-top (see the
@@ -1089,17 +1180,47 @@ tbody tr:last-child td {
   margin-top: 4px;
 }
 
-/* Donut chart (components/charts/StatusDonut.tsx) */
+/* "Patient status" radial chart (components/charts/PatientStatusRadial.tsx,
+   an evilcharts/ECharts component — see components/evilcharts/). A FIXED
+   (not min-) height is required here: PatientStatusRadial's own layout uses
+   Tailwind's h-full/flex-1 all the way down to the ECharts mount div, and
+   percentage/flex-basis heights only resolve against a container with a
+   definite height — align-items: stretch (not center) lets that single
+   child actually fill it, instead of shrinking to auto content height and
+   leaving the chart's canvas 0px tall. The fixed height also keeps this
+   card (and its .dash-two-col sibling, "Top patients", which stretches to
+   match via the row's default flex align-items) from collapsing down to a
+   cramped little strip whenever there happen to be only a few top patients
+   to list. */
+/* A definite height (not flex:1/min-height:0) is required here:
+   PatientStatusRadial's own layout uses Tailwind's h-full/flex-1 all the
+   way down to the chart's mount div, and a flex-grow child only actually
+   grows if its flex CONTAINER is itself forced taller than its natural
+   content (just the panel-header) — max-height on the .panel ancestor
+   caps it but doesn't force it taller, so flex:1 here had nothing to grow
+   into and collapsed. 240px (panel padding 48px + header ~45px + this
+   240px = ~333px) leaves real margin under the .panel's 350px cap, so
+   nothing gets clipped by its overflow:hidden even with font-metric
+   differences across browsers/OSes. */
 .donut-card-body {
   display: flex;
-  align-items: center;
+  align-items: stretch;
   gap: 24px;
+  height: 240px;
+}
+
+/* Host wrapper for the evilcharts isometric bar charts (Appointments — last
+   30 days / by month / Top patients — components/charts/{DailyVisitsIso,
+   MonthlyIso,TopPatientsIso}.tsx). Same fixed-height reasoning as
+   .donut-card-body above. */
+.iso-chart-host {
+  height: 240px;
 }
 
 .donut-wrap {
   position: relative;
-  width: 132px;
-  height: 132px;
+  width: 168px;
+  height: 168px;
   flex-shrink: 0;
 }
 
@@ -1429,6 +1550,14 @@ tbody tr:last-child td {
   flex: 1;
   min-width: 0;
   margin-top: 0;
+  display: flex;
+  flex-direction: column;
+  max-height: 350px;
+  overflow: hidden;
+}
+
+.hero-row > .panel > .panel-header {
+  flex-shrink: 0;
 }
 
 .hero-row > .panel:first-child {
@@ -1803,7 +1932,7 @@ tbody tr:last-child td {
 .appt-sidebar {
   display: flex;
   flex-direction: column;
-  width: 260px;
+  width: 300px;
   flex-shrink: 0;
   border-right: 1px solid var(--border);
 }
@@ -1866,6 +1995,25 @@ tbody tr:last-child td {
      of wrapping — min-width: 0 lets it shrink back to the column's actual
      width instead of overflowing it. */
   min-width: 0;
+}
+
+/* Card background tinted by status — a lighter wash of the same color as
+   the status badge (mixed with --card-bg rather than a hardcoded white so
+   it stays correct in dark mode too), plus a matching left border so the
+   status still reads at a glance without the badge alone doing all the work. */
+.today-appt-card--confirmed {
+  background: color-mix(in srgb, var(--success-bg) 45%, var(--card-bg));
+  border-left: 3px solid var(--success-text);
+}
+
+.today-appt-card--completed {
+  background: color-mix(in srgb, var(--info-bg) 45%, var(--card-bg));
+  border-left: 3px solid var(--info-text);
+}
+
+.today-appt-card--cancelled {
+  background: color-mix(in srgb, var(--danger-bg) 45%, var(--card-bg));
+  border-left: 3px solid var(--danger-text);
 }
 
 .today-appt-info {

@@ -148,7 +148,7 @@ export default async function SchedulePage({
       <div className="page-header">
         <div>
           <p className="page-eyebrow">Calendar</p>
-          <h1 className="page-title">Schedule</h1>
+          <h1 className="page-title">Appointment</h1>
         </div>
         <div className="page-header-actions">
           <BookAppointmentModal upcomingDays={upcomingDays} />
@@ -178,7 +178,7 @@ export default async function SchedulePage({
             ) : (
               <div className="today-appt-list">
                 {todaysAppointments.map((a) => (
-                  <div className="today-appt-card" key={a.id}>
+                  <div className={`today-appt-card today-appt-card--${a.status.toLowerCase()}`} key={a.id}>
                     <span className="avatar">{initialsFor(a.clientName)}</span>
                     <div className="today-appt-info">
                       <p className="today-appt-name">{a.clientName}</p>

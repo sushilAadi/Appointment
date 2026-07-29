@@ -12,10 +12,11 @@ import {
 import { getDashboardStats } from "@/lib/dashboardStats";
 import { CLINIC_TIMEZONE, DOCTOR_NAME } from "@/lib/config";
 import { initialsFor } from "@/lib/format";
-import Sparkline from "@/components/charts/Sparkline";
-import DailyVisitsChart from "@/components/charts/DailyVisitsChart";
-import MonthlyBars from "@/components/charts/MonthlyBars";
-import StatusDonut from "@/components/charts/StatusDonut";
+import MiniIsoBars from "@/components/evilcharts/charts/mini-isometric-bars";
+import DailyVisitsIso from "@/components/charts/DailyVisitsIso";
+import MonthlyIso from "@/components/charts/MonthlyIso";
+import TopPatientsIso from "@/components/charts/TopPatientsIso";
+import PatientStatusRadial from "@/components/charts/PatientStatusRadial";
 import HourHeatmap from "@/components/charts/HourHeatmap";
 
 export const dynamic = "force-dynamic";
@@ -115,10 +116,6 @@ export default async function AppointmentsPage() {
     },
   ];
 
-  const statusTotal = stats.statusTotals.confirmed + stats.statusTotals.completed + stats.statusTotals.cancelled;
-  const statusPct = (n: number) => (statusTotal > 0 ? Math.round((n / statusTotal) * 100) : 0);
-  const topPatientMax = stats.topPatients[0]?.visits ?? 1;
-
   return (
     <>
       <div className="page-header">
@@ -147,7 +144,7 @@ export default async function AppointmentsPage() {
             </div>
             <div className="kpi-card-value-row">
               <span className="kpi-value">{k.value}</span>
-              <Sparkline values={sparklineValues} />
+              <MiniIsoBars values={sparklineValues} />
             </div>
             <div className={`kpi-delta ${k.up ? "up" : "down"}`}>
               {k.up ? <TrendingUp size={12} /> : <TrendingDown size={12} />}
@@ -171,14 +168,18 @@ export default async function AppointmentsPage() {
               </span>
             </div>
           </div>
-          <DailyVisitsChart days={stats.last30Days} />
+          <div className="iso-chart-host">
+            <DailyVisitsIso days={stats.last30Days} />
+          </div>
         </section>
 
         <section className="panel">
           <div className="panel-header">
             <h2>Appointments by month</h2>
           </div>
-          <MonthlyBars months={stats.monthlyThisYear} />
+          <div className="iso-chart-host">
+            <MonthlyIso months={stats.monthlyThisYear} />
+          </div>
         </section>
       </div>
 
@@ -188,31 +189,15 @@ export default async function AppointmentsPage() {
             <h2>Patient status</h2>
           </div>
           <div className="donut-card-body">
-            <StatusDonut
+            <PatientStatusRadial
               confirmed={stats.statusTotals.confirmed}
               completed={stats.statusTotals.completed}
               cancelled={stats.statusTotals.cancelled}
+              uniquePatients={stats.uniquePatients}
+              thisWeekTotal={stats.thisWeekTotal}
+              newPatientsThisWeek={stats.newPatientsThisWeek}
+              showUpRateThisWeek={stats.showUpRateThisWeek}
             />
-            <div className="donut-legend-list">
-              <div className="donut-legend-row">
-                <span className="legend-dot" style={{ background: "var(--success-text)" }} />
-                <span className="donut-legend-label">Confirmed</span>
-                <span className="donut-legend-pct">{statusPct(stats.statusTotals.confirmed)}%</span>
-                <span className="donut-legend-count">{stats.statusTotals.confirmed}</span>
-              </div>
-              <div className="donut-legend-row">
-                <span className="legend-dot" style={{ background: "var(--info-text)" }} />
-                <span className="donut-legend-label">Completed</span>
-                <span className="donut-legend-pct">{statusPct(stats.statusTotals.completed)}%</span>
-                <span className="donut-legend-count">{stats.statusTotals.completed}</span>
-              </div>
-              <div className="donut-legend-row">
-                <span className="legend-dot" style={{ background: "var(--danger-text)" }} />
-                <span className="donut-legend-label">Cancelled</span>
-                <span className="donut-legend-pct">{statusPct(stats.statusTotals.cancelled)}%</span>
-                <span className="donut-legend-count">{stats.statusTotals.cancelled}</span>
-              </div>
-            </div>
           </div>
         </section>
 
@@ -223,22 +208,8 @@ export default async function AppointmentsPage() {
           {stats.topPatients.length === 0 ? (
             <p className="empty-state">No completed visits yet.</p>
           ) : (
-            <div className="top-patients-list">
-              {stats.topPatients.map((p) => (
-                <div className="top-patients-row" key={p.phone}>
-                  <span className="avatar">{initialsFor(p.name)}</span>
-                  <div className="top-patients-info">
-                    <p className="top-patients-name">{p.name}</p>
-                    <div className="top-patients-track">
-                      <span
-                        className="top-patients-fill"
-                        style={{ width: `${Math.round((p.visits / topPatientMax) * 100)}%` }}
-                      />
-                    </div>
-                  </div>
-                  <span className="top-patients-count">{p.visits}</span>
-                </div>
-              ))}
+            <div className="iso-chart-host">
+              <TopPatientsIso patients={stats.topPatients} />
             </div>
           )}
         </section>
