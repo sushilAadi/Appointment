@@ -18,8 +18,8 @@ export const CLINIC_UTC_OFFSET_MINUTES = Number(process.env.CLINIC_UTC_OFFSET_MI
 
 export const WORKING_HOURS = {
   // 24-hour clock, in CLINIC_TIMEZONE.
-  startHour: 9,
-  endHour: 17,
+  startHour: 10,
+  endHour: 22,
   // 0 = Sunday ... 6 = Saturday. Default: closed Sunday (0) and Saturday (6).
   closedDays: [0, 6] as number[],
 };

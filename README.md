@@ -4,7 +4,7 @@ A Next.js app that lets patients book appointments with a single doctor
 entirely over WhatsApp. Every booking is written to Postgres (Supabase),
 mirrored to a Google Calendar event, logged as a row in a Google Sheet, and
 both the patient and the doctor get a WhatsApp confirmation. A small
-password-protected `/appointments` dashboard shows everything in a browser.
+dashboard at `/` shows everything in a browser.
 
 ## How it works
 
@@ -18,8 +18,7 @@ password-protected `/appointments` dashboard shows everything in a browser.
    message to the doctor.
 5. The doctor can text `today`, `week`, or `cancel` to their own WhatsApp
    number to manage their schedule from their phone.
-6. Anyone with the dashboard password can browse `/appointments` in a
-   browser.
+6. The doctor can browse the dashboard at `/` in a browser.
 
 Everything below is a one-time setup. Budget about 30–45 minutes the first
 time through.
@@ -219,19 +218,20 @@ the calendar/sheet in the background with no human needing to click
 
 ---
 
-## 6. Doctor / clinic details + dashboard password
+## 6. Doctor / clinic details
 
 In `.env`, set:
 
 ```
 DOCTOR_NAME="Dr. Jane Smith"
 CLINIC_NAME="Sunrise Family Clinic"
-ADMIN_USER="admin"
-ADMIN_PASSWORD="pick-something-strong"
 ```
 
-`ADMIN_USER`/`ADMIN_PASSWORD` gate the `/appointments` browser dashboard
-with HTTP Basic Auth.
+The `/`, `/patients`, and `/schedule` dashboard pages are open
+(no login) — anyone with the URL can view and manage bookings. If you need
+to restrict access, put the deployment behind your host's own access
+control (e.g. Vercel Deployment Protection) rather than an app-level
+password.
 
 ---
 
@@ -241,9 +241,7 @@ with HTTP Basic Auth.
 npm run dev
 ```
 
-- `http://localhost:3000` — status page
-- `http://localhost:3000/appointments` — dashboard (prompts for the admin
-  user/password)
+- `http://localhost:3000` — appointments dashboard
 - `http://localhost:3000/api/whatsapp/webhook` — the endpoint Meta calls
 
 Try the full flow from your phone:
@@ -295,8 +293,13 @@ export const BOOKING_WINDOW_DAYS = 7;
 ```
 app/
   api/whatsapp/webhook/route.ts   Meta webhook (GET verify, POST messages)
-  appointments/page.tsx           Admin dashboard (password protected)
-  page.tsx                        Status landing page
+  (dashboard)/layout.tsx          Shared top nav + sidebar chrome
+  (dashboard)/page.tsx            Appointments dashboard, served at "/"
+  (dashboard)/patients/           Patient directory (grouped by phone)
+  (dashboard)/schedule/           Day-grouped upcoming agenda
+  globals.css                     Design tokens + shared dashboard styles
+components/
+  Logo.tsx / TopNav.tsx / Sidebar.tsx / ThemeToggle.tsx
 lib/
   bookingBot.ts                   Conversation state machine (client + doctor)
   appointments.ts                 create/cancel appointment side effects
@@ -308,7 +311,6 @@ lib/
   db/chatSessions.ts              Per-phone conversation state, stored in DB
   config.ts                       Business rules (hours, slot length, names)
 supabase/schema.sql               Run once in the Supabase SQL Editor
-middleware.ts                     Basic Auth for /appointments
 ```
 
 ## Extending
