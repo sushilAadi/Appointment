@@ -37,6 +37,18 @@ export const MAX_TOTAL_SLOTS_SHOWN = 40;
 export const DOCTOR_NAME = process.env.DOCTOR_NAME || "the doctor";
 export const CLINIC_NAME = process.env.CLINIC_NAME || "the clinic";
 
+// Contact address shown on the public /privacy, /terms, /support, and
+// /data-deletion pages (see app/(legal)/**). Falls back to the developer's
+// own address only so those pages never render a broken/empty contact —
+// every real deployment should set this per clinic.
+export const SUPPORT_EMAIL = process.env.SUPPORT_EMAIL || "sushiluidev@gmail.com";
+
+// Human-readable "Last updated" date shown on the legal pages. A plain
+// string, not a computed Date — these documents change when someone
+// deliberately edits them, not on every build, so this is bumped by hand
+// alongside any real edit to app/(legal)/privacy or /terms.
+export const LEGAL_LAST_UPDATED = "July 31, 2026";
+
 // Normalize to digits only so comparisons with WhatsApp's "from" field
 // (which arrives as digits with no "+") are reliable.
 export function normalizePhone(phone: string): string {

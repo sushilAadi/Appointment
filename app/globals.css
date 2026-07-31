@@ -2841,3 +2841,93 @@ tbody tr:last-child td {
   }
 }
 
+/* ---------------------------------------------------------------------------
+   Public/legal pages — /privacy, /terms, /support, /data-deletion. Outside
+   the (dashboard) route group on purpose: these are read by patients,
+   clinics evaluating the product, and Meta's app review, none of whom
+   should see the internal sidebar/top-nav chrome. Reuses the existing
+   .container/.card tokens above rather than inventing a new layout system.
+--------------------------------------------------------------------------- */
+.legal-shell {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.legal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 24px;
+  border-bottom: 1px solid var(--border);
+}
+
+.legal-nav {
+  display: flex;
+  gap: 20px;
+}
+
+.legal-nav a {
+  color: var(--muted);
+  font-size: 14px;
+  text-decoration: none;
+}
+
+.legal-nav a:hover {
+  color: var(--text);
+}
+
+.legal-main {
+  flex: 1;
+  display: flex;
+  justify-content: center;
+  padding: 8px 0 48px;
+}
+
+.legal-content {
+  max-width: 760px;
+}
+
+.legal-updated {
+  color: var(--muted);
+  font-size: 13px;
+  margin: -4px 0 28px;
+}
+
+.legal-content h2 {
+  font-size: 19px;
+  margin: 32px 0 10px;
+}
+
+.legal-content h2:first-of-type {
+  margin-top: 0;
+}
+
+.legal-content p,
+.legal-content li {
+  color: var(--text);
+  line-height: 1.7;
+  font-size: 15px;
+}
+
+.legal-content ul {
+  margin: 10px 0;
+  padding-left: 20px;
+}
+
+.legal-content li + li {
+  margin-top: 6px;
+}
+
+.legal-content a {
+  color: var(--navy);
+  text-decoration: underline;
+}
+
+.legal-footer {
+  text-align: center;
+  padding: 20px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
